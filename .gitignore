@@ -218,3 +218,25 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project: raw data never goes into git, only tiny test fixtures
+data/
+*.csv
+!tests/fixtures/**/*.csv
+
+# Databricks bundle state
+.databricks/
+
+# Local Spark artifacts
+spark-warehouse/
+metastore_db/
+derby.log
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# IDE and auxiliary environments
+.idea/
+.venv-connect/

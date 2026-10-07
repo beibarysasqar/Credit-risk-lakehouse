@@ -1,0 +1,13 @@
+resources:
+  pipelines:
+    credit_risk_pipeline:
+      name: credit_risk_pipeline
+      serverless: true
+      catalog: ${var.catalog}
+      schema: bronze
+      root_path: ../src
+      libraries:
+        - glob:
+            include: ../src/credit_risk/pipelines/**
+      configuration:
+        catalog: ${var.catalog}

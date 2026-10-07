@@ -1,0 +1,25 @@
+bundle:
+  name: credit_risk
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog that all pipelines and jobs read from and write to.
+
+# No workspace host or profile here: locally the CLI uses the DEFAULT profile,
+# in CI it uses DATABRICKS_HOST / DATABRICKS_TOKEN.
+targets:
+  dev:
+    mode: development
+    default: true
+    variables:
+      catalog: credit_risk_dev
+
+  prod:
+    mode: production
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      catalog: credit_risk_prod
