@@ -91,7 +91,7 @@ Raw Kaggle files and any data samples larger than fixtures are **never** committ
 
 ## Ingestion
 
-- Kaggle CSVs land in the Volume `raw/landing/home_credit/<table>/`. Auto Loader with `cloudFiles.schemaLocation` in the same Volume, schema hints for keys and amounts; COPY INTO is used only in the comparison demo job.
+- Kaggle CSVs land in the Volume `raw/landing/home_credit/<table>/`. Auto Loader with schema hints for keys and amounts (`common/schemas.py`). Inside a Lakeflow pipeline the schema location and checkpoint are managed by the pipeline — do not set `cloudFiles.schemaLocation` there; set it (in the same Volume) only for Auto Loader outside pipelines; COPY INTO is used only in the comparison demo job.
 - ECB: `https://data-api.ecb.europa.eu/service/data/{flow}/{key}?format=csvdata`. Old `sdw-wsrest` URLs are dead — never use them. Series keys are pinned in `config.py`. If outbound access from serverless is blocked, fetch locally via `ingestion/ecb.py` and upload to the Volume; don't silently skip.
 - Streaming: generator replays `installments_payments` as JSON micro-files into a Volume; consumer uses Structured Streaming with `trigger(availableNow=True)` only (the only trigger supported on serverless) and a checkpoint in the Volume.
 
@@ -111,6 +111,7 @@ Raw Kaggle files and any data samples larger than fixtures are **never** committ
 
 - GitHub Actions: on PR → ruff, unit tests, `bundle validate -t dev`; on merge to `main` → `bundle deploy -t prod`. Secrets: `DATABRICKS_HOST`, `DATABRICKS_TOKEN` in repo secrets only.
 - Ownership split: **Terraform** owns catalogs, schemas, volumes, grants; **bundles** own pipelines and jobs. Never define the same resource in both.
+- Terraform: `cd infra/terraform && terraform plan -var-file=envs/dev.tfvars`. State is local and gitignored; `.terraform.lock.hcl` is committed. Local files are landed with `uv run python -m credit_risk.ingestion.kaggle_landing --source-dir <dir> --catalog <catalog>`.
 - Free Edition uses Default Storage: `databricks catalogs create` (REST) fails with "Metastore storage root URL does not exist"; `CREATE CATALOG` via SQL on the serverless warehouse works. `credit_risk_dev` was bootstrapped that way in phase 0 and must be `terraform import`ed, not recreated.
 - Conventional Commits (`feat:`, `fix:`, `refactor:`, `test:`, `ci:`, `docs:`). One logical change per commit.
 
