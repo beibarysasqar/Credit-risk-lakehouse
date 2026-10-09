@@ -240,3 +240,6 @@ derby.log
 # IDE and auxiliary environments
 .idea/
 .venv-connect/
+
+# macOS
+.DS_Store
