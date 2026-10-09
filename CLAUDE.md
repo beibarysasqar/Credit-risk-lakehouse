@@ -62,8 +62,9 @@ Raw Kaggle files and any data samples larger than fixtures are **never** committ
 
 - Tables: `application_train/test`, `bureau`, `bureau_balance`, `previous_application`, `POS_CASH_balance`, `credit_card_balance`, `installments_payments`. Keys: `SK_ID_CURR` (client/application), `SK_ID_PREV` (previous Home Credit loan), `SK_ID_BUREAU` (credit bureau loan).
 - `TARGET` exists only in `application_train`. Never union train and test without an explicit `is_train` flag; never impute or leak `TARGET` into features.
-- **There are no calendar dates.** All `DAYS_*` are negative offsets from the application date, `MONTHS_BALANCE` are offsets from it in months. Calendar mapping uses a single synthetic `ANCHOR_DATE` in `config.py`; every derived date must go through one helper (`to_calendar_date`, `to_calendar_month`). Document that the mapping is synthetic.
-- `DAYS_EMPLOYED = 365243` is a sentinel → null + flag column `days_employed_anomaly`. Same pattern for other sentinels discovered in profiling; `XNA`/`XAP` → null in Silver.
+- **There are no calendar dates.** All `DAYS_*` are negative offsets from the application date, `MONTHS_BALANCE` are offsets from it in months. Calendar mapping uses a single synthetic `ANCHOR_DATE` (`2018-05-01`) in `config.py`; every derived date must go through one helper (`to_calendar_date`, `to_calendar_month` in `transformations/calendar.py`). Document that the mapping is synthetic.
+- `DAYS_EMPLOYED = 365243` is a sentinel → null + flag column `days_employed_anomaly`. Same pattern (`<column>_anomaly`) for other sentinels discovered in profiling: 365243 in five `previous_application.DAYS_*` columns, `SELLERPLACE_AREA = -1`; `XNA`/`XAP` → null in Silver.
+- Silver column names are the lowercase source names (`AMT_RECIVABLE` → `amt_receivable`); money columns are `DECIMAL(18,3)` (the source has up to 3 decimals). `silver.application` = train ∪ test with `is_train`.
 - `installments_payments` contains multiple rows per installment (partial payments). Aggregate per (`SK_ID_PREV`, `NUM_INSTALMENT_NUMBER`, `NUM_INSTALMENT_VERSION`) before computing DPD.
 - `bureau_balance.STATUS`: `0` = no DPD, `1..5` = DPD buckets (5 = 120+ or written off), `C` = closed, `X` = unknown. Map to ordinal bucket + `is_closed` + `is_unknown`, not to fake day counts.
 - `POS_CASH_balance` / `credit_card_balance` already carry `SK_DPD` and `SK_DPD_DEF`; use the source values and reconcile against computed installment DPD in a data-quality check, don't overwrite.
@@ -85,7 +86,8 @@ Raw Kaggle files and any data samples larger than fixtures are **never** committ
 ## Data quality (expectations)
 
 - Bronze: no expectations, keep `_rescued_data`, add `_ingested_at`, `_source_file` (from `_metadata.file_path`).
-- Silver: key not null / referential integrity → `expect_or_fail` on keys, `expect_or_drop` with a quarantine table `silver.<entity>_quarantine` for row-level garbage, `expect` (warn) for business plausibility (e.g. `AMT_CREDIT > 0`).
+- Silver: key not null → `expect_or_fail`, `expect_or_drop` with a quarantine table `silver.<entity>_quarantine` for row-level garbage, `expect` (warn) for business plausibility (e.g. `AMT_CREDIT > 0`). Rules live in `common/expectations.py`; drop rules must never evaluate to null.
+- Referential integrity: the Kaggle sample has orphan contracts (child rows whose `SK_ID_PREV` / `SK_ID_BUREAU` parent was not delivered), so parent presence is a flag column (`has_previous_application`, `has_bureau_record`) plus a warn expectation, never `expect_or_fail`. `SK_ID_CURR` → `silver.application` has no orphans and is an integration test.
 - Expectation names are snake_case and stable — they are queried from the event log for DQ reporting.
 - Dedup in Silver is deterministic: explicit key + ordering column; never `dropDuplicates()` without a subset.
 
