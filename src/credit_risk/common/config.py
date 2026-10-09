@@ -4,6 +4,8 @@ The catalog name is never hardcoded here: it flows from the bundle variable ``ca
 into pipeline/job parameters and is passed to these helpers explicitly.
 """
 
+from datetime import date
+
 LANDING_SCHEMA = "raw"
 LANDING_VOLUME = "landing"
 HOME_CREDIT_SOURCE = "home_credit"
@@ -19,6 +21,32 @@ HOME_CREDIT_TABLES: dict[str, str] = {
     "credit_card_balance": "credit_card_balance.csv",
     "installments_payments": "installments_payments.csv",
 }
+
+# Silver entity names. application_train and application_test are merged into "application".
+SILVER_ENTITIES: tuple[str, ...] = (
+    "application",
+    "bureau",
+    "bureau_balance",
+    "previous_application",
+    "pos_cash_balance",
+    "credit_card_balance",
+    "installments_payments",
+)
+
+# The source has no calendar dates: DAYS_* and MONTHS_BALANCE are offsets from the application
+# date. They are mapped to the calendar through this single SYNTHETIC anchor (every application
+# is treated as filed on this day). Only transformations/calendar.py may use it.
+ANCHOR_DATE = date(2018, 5, 1)
+
+# "Infinity" placeholder used by the source in DAYS_* columns (about 1000 years).
+DAYS_SENTINEL = 365243
+# previous_application.SELLERPLACE_AREA placeholder for an unknown selling area.
+SELLERPLACE_AREA_SENTINEL = -1
+# Source tokens for "not available" / "not applicable" in categorical columns.
+NULL_TOKENS: tuple[str, ...] = ("XNA", "XAP")
+
+# Source amounts carry up to 3 decimal places.
+AMOUNT_TYPE = "DECIMAL(18,3)"
 
 
 def landing_root(catalog: str) -> str:
