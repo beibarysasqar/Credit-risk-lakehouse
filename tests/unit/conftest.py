@@ -8,6 +8,7 @@ import pytest
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
+from credit_risk.common.expectations import SILVER_RULES
 from credit_risk.transformations import silver
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "home_credit"
@@ -45,5 +46,18 @@ def prepared(bronze: Callable[[str], DataFrame]) -> Callable[[str], DataFrame]:
             return silver.clean_previous_application(bronze("previous_application"))
         clean = getattr(silver, f"clean_{entity}")
         return clean(bronze(entity), build("previous_application"))
+
+    return build
+
+
+@pytest.fixture(scope="session")
+def silver_table(prepared: Callable[[str], DataFrame]) -> Callable[[str], DataFrame]:
+    """Build a Silver table as published: the prepared rows that pass every drop rule."""
+
+    def build(entity: str) -> DataFrame:
+        df = prepared(entity)
+        for condition in SILVER_RULES[entity].drop.values():
+            df = df.filter(F.expr(condition))
+        return df
 
     return build
