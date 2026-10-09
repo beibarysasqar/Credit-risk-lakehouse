@@ -14,6 +14,8 @@ dependencies = [
 dev = [
     "pytest>=8",
     "ruff>=0.6",
+    # Files API uploads and SQL checks in integration tests. Never databricks-connect.
+    "databricks-sdk>=0.60",
 ]
 
 [build-system]
@@ -34,3 +36,4 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = ["integration: queries the deployed dev catalog, needs Databricks auth"]
