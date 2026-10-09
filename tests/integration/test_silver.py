@@ -143,30 +143,10 @@ def test_bureau_balance_status_mapping(sql) -> None:
     ]
 
 
-def test_expectations_of_latest_update(sql, catalog: str) -> None:
+def test_expectations_of_latest_update(failed_expectations) -> None:
     """Every rule was evaluated in the latest update and no fail rule was broken."""
-    log = f"event_log(TABLE({catalog}.silver.application))"
-    rows = sql(
-        f"""
-        WITH latest AS (
-          SELECT origin.update_id AS update_id FROM {log}
-          WHERE event_type = 'create_update' ORDER BY timestamp DESC LIMIT 1
-        ),
-        expectations AS (
-          SELECT explode(from_json(
-            details:flow_progress.data_quality.expectations,
-            'array<struct<name:string,dataset:string,passed_records:bigint,failed_records:bigint>>'
-          )) AS e
-          FROM {log}
-          WHERE event_type = 'flow_progress' AND origin.update_id = (SELECT update_id FROM latest)
-        )
-        SELECT e.dataset, e.name, sum(e.passed_records), sum(e.failed_records)
-        FROM expectations GROUP BY ALL
-        """
-    )
-    failed = {(dataset.split(".")[-1], name): int(bad) for dataset, name, _, bad in rows}
     for entity, rules in SILVER_RULES.items():
         for name in [*rules.fail, *rules.drop, *rules.warn]:
-            assert (entity, name) in failed, f"{entity}.{name} missing from the event log"
+            assert (entity, name) in failed_expectations, f"{entity}.{name} missing from the log"
         for name in rules.fail:
-            assert failed[entity, name] == 0
+            assert failed_expectations[entity, name] == 0

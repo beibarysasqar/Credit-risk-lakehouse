@@ -33,3 +33,28 @@ def sql(catalog: str) -> SqlRunner:
         return response.result.data_array or []
 
     return run
+
+
+@pytest.fixture(scope="session")
+def failed_expectations(sql: SqlRunner, catalog: str) -> dict[tuple[str, str], int]:
+    """Failed records per (table, expectation name) in the latest pipeline update."""
+    log = f"event_log(TABLE({catalog}.silver.application))"
+    rows = sql(
+        f"""
+        WITH latest AS (
+          SELECT origin.update_id AS update_id FROM {log}
+          WHERE event_type = 'create_update' ORDER BY timestamp DESC LIMIT 1
+        ),
+        expectations AS (
+          SELECT explode(from_json(
+            details:flow_progress.data_quality.expectations,
+            'array<struct<name:string,dataset:string,passed_records:bigint,failed_records:bigint>>'
+          )) AS e
+          FROM {log}
+          WHERE event_type = 'flow_progress' AND origin.update_id = (SELECT update_id FROM latest)
+        )
+        SELECT e.dataset, e.name, sum(e.passed_records), sum(e.failed_records)
+        FROM expectations GROUP BY ALL
+        """
+    )
+    return {(dataset.split(".")[-1], name): int(bad) for dataset, name, _, bad in rows}

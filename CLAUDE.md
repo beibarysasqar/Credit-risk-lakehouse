@@ -37,7 +37,7 @@ databricks.yml              # bundle root, targets dev / prod
 resources/                  # *.yml: pipelines, jobs (one resource per file)
 src/credit_risk/
   common/                   # config.py (catalog, anchor date, ECB series), schemas.py
-  transformations/          # PURE functions: DataFrame in → DataFrame out
+  transformations/          # PURE functions: DataFrame in → DataFrame out (silver.py, dpd.py, gold.py, calendar.py)
   pipelines/                # thin Lakeflow wrappers: bronze.py, silver.py, gold.py, history.py
   ingestion/                # ecb.py, kaggle landing helpers
   streaming/                # payment-stream generator + consumer
@@ -65,15 +65,19 @@ Raw Kaggle files and any data samples larger than fixtures are **never** committ
 - **There are no calendar dates.** All `DAYS_*` are negative offsets from the application date, `MONTHS_BALANCE` are offsets from it in months. Calendar mapping uses a single synthetic `ANCHOR_DATE` (`2018-05-01`) in `config.py`; every derived date must go through one helper (`to_calendar_date`, `to_calendar_month` in `transformations/calendar.py`). Document that the mapping is synthetic.
 - `DAYS_EMPLOYED = 365243` is a sentinel → null + flag column `days_employed_anomaly`. Same pattern (`<column>_anomaly`) for other sentinels discovered in profiling: 365243 in five `previous_application.DAYS_*` columns, `SELLERPLACE_AREA = -1`; `XNA`/`XAP` → null in Silver.
 - Silver column names are the lowercase source names (`AMT_RECIVABLE` → `amt_receivable`); money columns are `DECIMAL(18,3)` (the source has up to 3 decimals). `silver.application` = train ∪ test with `is_train`.
-- `installments_payments` contains multiple rows per installment (partial payments). Aggregate per (`SK_ID_PREV`, `NUM_INSTALMENT_NUMBER`, `NUM_INSTALMENT_VERSION`) before computing DPD.
+- `installments_payments` contains multiple rows per installment (partial payments). Aggregate per (`SK_ID_PREV`, `NUM_INSTALMENT_NUMBER`, `NUM_INSTALMENT_VERSION`) before computing DPD → `silver.installments`. An installment is settled when the running sum of payments covers it; unpaid ones stay overdue until the last observed day (offset −1).
 - `bureau_balance.STATUS`: `0` = no DPD, `1..5` = DPD buckets (5 = 120+ or written off), `C` = closed, `X` = unknown. Map to ordinal bucket + `is_closed` + `is_unknown`, not to fake day counts.
-- `POS_CASH_balance` / `credit_card_balance` already carry `SK_DPD` and `SK_DPD_DEF`; use the source values and reconcile against computed installment DPD in a data-quality check, don't overwrite.
+- `POS_CASH_balance` / `credit_card_balance` already carry `SK_DPD` and `SK_DPD_DEF`; use the source values and reconcile against computed installment DPD in a data-quality check (warn expectation `installment_dpd_default_matches_source` on `gold.contract_month`), don't overwrite. `SK_DPD` drives the default flag; `SK_DPD_DEF` is a materiality filter and is only published alongside.
 - Macro data (ECB) is joined by calendar month via the anchor mapping. Home Credit's country is not disclosed, so the macro join is illustrative — say so in `docs/data_model.md`.
 
 ## Gold: `gold.client_month`
 
 - Grain: one row per `SK_ID_CURR` × `month`. Uniqueness of this key is an integration test.
-- Columns at minimum: `max_dpd`, `dpd_bucket`, `default_flag`, `default_start_month`, `exposure_amount`, `n_active_contracts`, macro columns.
+- Built from `gold.contract_month` (one row per `SK_ID_PREV` × `month`: source DPD, computed installment DPD, activity, exposure).
+- Columns at minimum: `max_dpd`, `dpd_bucket`, `default_flag`, `default_start_month`, `exposure_amount`, `n_active_contracts`, macro columns (macro columns come with the ECB phase).
+- `default_flag` uses Home Credit contracts only. Bureau statuses are ordinal buckets and stay in separate columns (`bureau_max_dpd_bucket`, `bureau_default_flag` = bucket ≥ 4, `n_bureau_active_contracts`); never merge them into `max_dpd`.
+- `default_start_month` = first month of the current uninterrupted default episode; a non-default or missing month ends the episode.
+- `exposure_amount` = cards `amt_balance` + POS/cash estimate `cnt_instalment_future × amt_annuity`, active contracts only; bureau debt is not included.
 - **Default definition = 90+ DPD** on any contract in the month (DPD component of CRR Art. 178 only; unlikeliness-to-pay and materiality thresholds are out of scope). Any change to the definition requires updating `docs/default_definition.md` and the tests in the same commit.
 - Point-in-time correctness: features for month M use only data with offset ≤ M. Add a test that would fail on look-ahead.
 
@@ -86,6 +90,7 @@ Raw Kaggle files and any data samples larger than fixtures are **never** committ
 ## Data quality (expectations)
 
 - Bronze: no expectations, keep `_rescued_data`, add `_ingested_at`, `_source_file` (from `_metadata.file_path`).
+- Derived tables (`silver.installments`, Gold) have fail/warn rules in `DERIVED_RULES` and no quarantine.
 - Silver: key not null → `expect_or_fail`, `expect_or_drop` with a quarantine table `silver.<entity>_quarantine` for row-level garbage, `expect` (warn) for business plausibility (e.g. `AMT_CREDIT > 0`). Rules live in `common/expectations.py`; drop rules must never evaluate to null.
 - Referential integrity: the Kaggle sample has orphan contracts (child rows whose `SK_ID_PREV` / `SK_ID_BUREAU` parent was not delivered), so parent presence is a flag column (`has_previous_application`, `has_bureau_record`) plus a warn expectation, never `expect_or_fail`. `SK_ID_CURR` → `silver.application` has no orphans and is an integration test.
 - Expectation names are snake_case and stable — they are queried from the event log for DQ reporting.
