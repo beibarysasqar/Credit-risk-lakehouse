@@ -134,3 +134,58 @@ SILVER_RULES: dict[str, Rules] = {
 }
 
 assert tuple(SILVER_RULES) == SILVER_ENTITIES
+
+# Tables derived from Silver: the aggregated installments and the Gold contract / client months.
+# Nothing is dropped here (the inputs are already clean), so there are no quarantine tables.
+_DEFAULT_MATCHES = "(installment_dpd >= 90) = (source_dpd >= 90)"
+_EXPOSURE_AMOUNT_NOT_NEGATIVE = {
+    "exposure_amount_not_negative": "exposure_amount IS NULL OR exposure_amount >= 0"
+}
+
+DERIVED_RULES: dict[str, Rules] = {
+    "installments": Rules(
+        fail={
+            "sk_id_prev_not_null": "sk_id_prev IS NOT NULL",
+            "sk_id_curr_not_null": "sk_id_curr IS NOT NULL",
+            "instalment_identified": (
+                "num_instalment_number IS NOT NULL AND num_instalment_version IS NOT NULL "
+                "AND instalment_date IS NOT NULL"
+            ),
+        },
+        drop={},
+        warn={
+            "instalment_paid_in_full": "is_paid_in_full",
+            "amt_paid_not_above_instalment": "amt_paid <= amt_instalment",
+        },
+    ),
+    "contract_month": Rules(
+        fail={
+            "sk_id_prev_not_null": "sk_id_prev IS NOT NULL",
+            "sk_id_curr_not_null": "sk_id_curr IS NOT NULL",
+            "month_not_null": "month IS NOT NULL",
+            "dpd_not_null": "dpd IS NOT NULL",
+        },
+        drop={},
+        warn={
+            **_PREVIOUS_APPLICATION_EXISTS,
+            **_EXPOSURE_AMOUNT_NOT_NEGATIVE,
+            # Reconciliation of the computed installment DPD with the source SK_DPD.
+            "installment_dpd_default_matches_source": (
+                f"installment_dpd IS NULL OR source_dpd IS NULL OR {_DEFAULT_MATCHES}"
+            ),
+        },
+    ),
+    "client_month": Rules(
+        fail={
+            "sk_id_curr_not_null": "sk_id_curr IS NOT NULL",
+            "month_not_null": "month IS NOT NULL",
+            "default_flag_matches_max_dpd": "default_flag = coalesce(max_dpd >= 90, false)",
+            "default_start_month_matches_flag": (
+                "default_flag = (default_start_month IS NOT NULL) "
+                "AND coalesce(default_start_month <= month, true)"
+            ),
+        },
+        drop={},
+        warn=_EXPOSURE_AMOUNT_NOT_NEGATIVE,
+    ),
+}

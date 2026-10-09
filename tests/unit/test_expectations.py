@@ -6,7 +6,7 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
 from credit_risk.common.config import SILVER_ENTITIES
-from credit_risk.common.expectations import SILVER_RULES
+from credit_risk.common.expectations import DERIVED_RULES, SILVER_RULES
 
 
 def test_every_silver_entity_has_rules() -> None:
@@ -40,3 +40,21 @@ def test_rules_evaluate_on_prepared_data(entity: str, prepared: Callable[[str], 
     # A drop rule is never null: a row is either kept or quarantined.
     for condition in rules.drop.values():
         assert count_where(f"({condition}) IS NULL") == 0
+
+
+@pytest.mark.parametrize("entity", list(DERIVED_RULES))
+def test_derived_rules_evaluate_on_derived_data(
+    entity: str, derived: Callable[[str], DataFrame]
+) -> None:
+    rules = DERIVED_RULES[entity]
+    df = derived(entity)
+    names = [*rules.fail, *rules.warn]
+    assert all(re.fullmatch(r"[a-z][a-z0-9_]*", name) for name in names)
+    assert len(names) == len(set(names))
+    # Derived tables have no quarantine: their inputs are already clean.
+    assert not rules.drop
+
+    for condition in rules.warn.values():
+        df.filter(F.expr(condition)).count()
+    for condition in rules.fail.values():
+        assert df.filter(F.expr(f"NOT coalesce({condition}, false)")).count() == 0

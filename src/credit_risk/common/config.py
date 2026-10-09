@@ -48,6 +48,26 @@ NULL_TOKENS: tuple[str, ...] = ("XNA", "XAP")
 # Source amounts carry up to 3 decimal places.
 AMOUNT_TYPE = "DECIMAL(18,3)"
 
+# Default definition: 90+ days past due (DPD component of CRR Art. 178 only), see
+# docs/default_definition.md.
+DEFAULT_DPD_THRESHOLD = 90
+# DPD buckets as (lower edge in days, label), ascending.
+DPD_BUCKETS: tuple[tuple[int, str], ...] = (
+    (0, "0"),
+    (1, "1-29"),
+    (30, "30-59"),
+    (60, "60-89"),
+    (DEFAULT_DPD_THRESHOLD, "90+"),
+)
+# bureau_balance buckets are ordinal: 3 = 61-90 days, 4 = 91-120, 5 = 120+ or written off.
+# The first bucket that lies entirely beyond 90 days is the bureau proxy of the default.
+BUREAU_DEFAULT_BUCKET = 4
+# Monthly balance statuses (POS_CASH_balance / credit_card_balance) of a contract that is open.
+ACTIVE_CONTRACT_STATUSES: tuple[str, ...] = ("Active", "Signed", "Demand")
+# Last observed day as an offset from the application date: the source ends at offset -1.
+# Installments still unpaid on that day are overdue up to it.
+OBSERVATION_END_OFFSET_DAYS = -1
+
 
 def landing_root(catalog: str) -> str:
     """Return the root path of the landing volume of ``catalog``."""

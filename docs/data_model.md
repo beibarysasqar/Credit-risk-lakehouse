@@ -115,3 +115,68 @@ delivered. They are kept, flagged and reported as warnings (`bureau_record_exist
 | `installments_payments` → `previous_application` | `has_previous_application` | 1 250 826 |
 
 `sk_id_curr` of every child table resolves to `silver.application` (checked in the integration tests).
+
+### Installments
+
+`silver.installments` is derived from `silver.installments_payments` (`transformations/dpd.py`):
+one row per `sk_id_prev` × `num_instalment_number` × `num_instalment_version`, clustered by
+`sk_id_curr`, `sk_id_prev`. It has no quarantine table, its input is already clean.
+
+| Column | Meaning |
+|---|---|
+| `instalment_date`, `amt_instalment` | due date (synthetic) and amount, constant within the key |
+| `amt_paid`, `n_payments` | sum and number of the payments made |
+| `first_payment_date`, `last_payment_date` | first and last payment |
+| `paid_in_full_date` | first payment date on which the running sum of payments covers `amt_instalment`; null if never |
+| `is_paid_in_full` | `amt_paid >= amt_instalment` |
+| `dpd_at_settlement` | days from the due date to `paid_in_full_date`, never negative; null while unsettled |
+
+## Gold
+
+Materialized views in the same pipeline, logic in `src/credit_risk/transformations/gold.py`. The
+default definition is described in [default_definition.md](default_definition.md).
+
+| Table | Built from | Grain / key | Clustered by |
+|---|---|---|---|
+| `gold.contract_month` | `silver.pos_cash_balance` ∪ `silver.credit_card_balance`, `silver.installments`, `silver.previous_application` | one row per `sk_id_prev` × `month` | `sk_id_curr`, `month` |
+| `gold.client_month` | `gold.contract_month`, `silver.bureau_balance`, `silver.bureau` | one row per `sk_id_curr` × `month` | `sk_id_curr`, `month` |
+
+`month` is the first day of the synthetic calendar month. Neither table carries `TARGET` or
+application attributes. Macro columns are not there yet (ECB phase).
+
+### `gold.contract_month`
+
+A row exists for every month with a balance row or with an installment due or overdue.
+
+| Column | Meaning |
+|---|---|
+| `contract_type` | `pos_cash`, `credit_card`; null when the month has installments only |
+| `name_contract_status` | balance status of the month |
+| `source_dpd`, `source_dpd_def` | `sk_dpd`, `sk_dpd_def` as delivered |
+| `installment_dpd` | DPD computed from the installments |
+| `dpd`, `dpd_source` | `source_dpd` if present (`balance`), otherwise `installment_dpd` (`installments`) |
+| `is_active` | status is `Active`, `Signed` or `Demand`; true for installment-only months |
+| `exposure_amount` | cards: `amt_balance`; POS / cash: `cnt_instalment_future × amt_annuity` (estimate) |
+| `has_previous_application` | false for orphan contracts |
+
+### `gold.client_month`
+
+A row exists for every month in which the client has a contract row or a credit bureau status.
+
+| Column | Meaning |
+|---|---|
+| `max_dpd`, `max_dpd_def` | maximum `dpd` / `source_dpd_def` over the client's contracts; null without a contract row |
+| `dpd_bucket` | `0`, `1-29`, `30-59`, `60-89`, `90+` |
+| `default_flag` | `max_dpd >= 90` |
+| `default_start_month` | first month of the current uninterrupted default episode; null outside default |
+| `exposure_amount` | sum over active contracts |
+| `n_active_contracts`, `n_contracts` | active / all contract rows of the month |
+| `bureau_max_dpd_bucket`, `bureau_default_flag`, `n_bureau_active_contracts` | credit bureau statuses, kept apart from `max_dpd` |
+
+### Data quality
+
+Rules are in `DERIVED_RULES` (`common/expectations.py`). `expect_or_fail`: keys not null,
+`default_flag_matches_max_dpd`, `default_start_month_matches_flag`. Warnings:
+`installment_dpd_default_matches_source` (reconciliation of computed and source DPD),
+`exposure_amount_not_negative`, `previous_application_exists`, `instalment_paid_in_full`,
+`amt_paid_not_above_instalment`. Key uniqueness is an integration test.

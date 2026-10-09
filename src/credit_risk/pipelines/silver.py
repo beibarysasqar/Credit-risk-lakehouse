@@ -6,8 +6,9 @@ from pyspark import pipelines as dp
 from pyspark.sql import DataFrame, SparkSession
 
 from credit_risk.common.config import SILVER_ENTITIES
-from credit_risk.common.expectations import SILVER_RULES
+from credit_risk.common.expectations import DERIVED_RULES, SILVER_RULES
 from credit_risk.transformations import silver
+from credit_risk.transformations.dpd import aggregate_installments
 from credit_risk.transformations.quality import quarantine_rows
 
 spark = SparkSession.getActiveSession()
@@ -90,3 +91,14 @@ def _define_silver_table(
 
 for _entity, (_build, _cluster_by) in SILVER_TABLES.items():
     _define_silver_table(_entity, _build, _cluster_by)
+
+
+@dp.materialized_view(
+    name="silver.installments",
+    comment="Installments of previous loans: partial payments aggregated, settlement date and DPD.",
+    cluster_by=["sk_id_curr", "sk_id_prev"],
+)
+@dp.expect_all_or_fail(DERIVED_RULES["installments"].fail)
+@dp.expect_all(DERIVED_RULES["installments"].warn)
+def _installments() -> DataFrame:
+    return aggregate_installments(_silver("installments_payments"))
