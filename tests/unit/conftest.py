@@ -9,7 +9,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
 from credit_risk.common.expectations import SILVER_RULES
-from credit_risk.transformations import silver
+from credit_risk.transformations import dpd, gold, silver
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "home_credit"
 
@@ -59,5 +59,27 @@ def silver_table(prepared: Callable[[str], DataFrame]) -> Callable[[str], DataFr
         for condition in SILVER_RULES[entity].drop.values():
             df = df.filter(F.expr(condition))
         return df
+
+    return build
+
+
+@pytest.fixture(scope="session")
+def derived(silver_table: Callable[[str], DataFrame]) -> Callable[[str], DataFrame]:
+    """Build a table derived from Silver (installments, contract_month, client_month)."""
+
+    def build(entity: str) -> DataFrame:
+        if entity == "installments":
+            return dpd.aggregate_installments(silver_table("installments_payments"))
+        if entity == "contract_month":
+            return gold.build_contract_month(
+                silver_table("pos_cash_balance"),
+                silver_table("credit_card_balance"),
+                dpd.installment_dpd_by_month(build("installments")),
+                silver_table("previous_application"),
+            )
+        bureau_month = gold.bureau_client_month(
+            silver_table("bureau_balance"), silver_table("bureau")
+        )
+        return gold.build_client_month(build("contract_month"), bureau_month)
 
     return build
