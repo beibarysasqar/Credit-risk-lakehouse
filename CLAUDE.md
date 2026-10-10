@@ -28,6 +28,9 @@ databricks bundle run <pipeline_key> -t dev --refresh <table>   # partial refres
 databricks bundle run validation_snapshot_job -t dev --params as_of_month=2018-04-01
 uv run python -m credit_risk.streaming.generator --source-dir <dir> --catalog <catalog>   # land payment micro-files
 databricks bundle run payment_stream_job -t dev   # ingest the micro-files landed since the last run
+databricks bundle run dq_report_job -t dev        # merge expectation results of the pipeline updates
+databricks bundle run copy_into_demo_job -t dev   # COPY INTO comparison demo (sandbox)
+uv run python -m credit_risk.perf.benchmark --catalog <catalog> [--step build|run|all]   # layout benchmark
 uv run pytest tests/integration -q        # asserts against dev catalog via SQL
 ```
 
@@ -42,9 +45,10 @@ src/credit_risk/
   common/                   # config.py (catalog, anchor date, ECB series), schemas.py
   transformations/          # PURE functions: DataFrame in → DataFrame out (silver.py, dpd.py, gold.py, macro.py, calendar.py)
   pipelines/                # thin Lakeflow wrappers: bronze.py, silver.py, gold.py, history.py
-  jobs/                     # thin job entry points (wheel scripts): validation_snapshot.py, payment_stream.py
-  ingestion/                # ecb.py, kaggle landing helpers, demo_correction.py
+  jobs/                     # thin job entry points (wheel scripts): validation_snapshot.py, payment_stream.py, dq_report.py, copy_into_demo.py
+  ingestion/                # ecb.py, kaggle landing helpers, demo_correction.py, copy_into.py
   streaming/                # payment-stream generator.py (local) + consumer.py
+  perf/                     # benchmark.py: local layout benchmark through the SQL warehouse
 tests/unit/  tests/integration/  tests/fixtures/   # tiny hand-made CSV/JSON fixtures
 infra/terraform/
 docs/                       # default_definition.md, data_model.md, perf_notes.md
@@ -60,6 +64,7 @@ Raw Kaggle files and any data samples larger than fixtures are **never** committ
 - Serverless restrictions: no `sparkContext`/RDD API, no `.cache()/.persist()`, no custom Spark confs beyond the supported list, no DBFS root paths. All files live in UC Volumes: `/Volumes/<catalog>/raw/landing/...`.
 - Catalog name is never hardcoded: bundle variable `catalog` → pipeline/job parameter → `config.py`. Targets: `dev` → `credit_risk_dev`, `prod` → `credit_risk_prod`.
 - Table names: `<layer>.<entity>` in snake_case, e.g. `silver.installments_payments`, `gold.client_month`. History tables: `history.<entity>_scd2`.
+- Two schemas sit outside the medallion flow and hold job-owned tables only: `monitoring` (DQ reporting) and `sandbox` (benchmark copies, COPY INTO demo). Nothing in Silver / Gold / History reads them.
 - Every function in `transformations/` has type hints, a docstring stating grain (one row per …) and keys, and at least one unit test.
 
 ## Data domain — Home Credit specifics (do not "fix" without asking)
@@ -104,11 +109,12 @@ Raw Kaggle files and any data samples larger than fixtures are **never** committ
 - Silver: key not null → `expect_or_fail`, `expect_or_drop` with a quarantine table `silver.<entity>_quarantine` for row-level garbage, `expect` (warn) for business plausibility (e.g. `AMT_CREDIT > 0`). Rules live in `common/expectations.py`; drop rules must never evaluate to null.
 - Referential integrity: the Kaggle sample has orphan contracts (child rows whose `SK_ID_PREV` / `SK_ID_BUREAU` parent was not delivered), so parent presence is a flag column (`has_previous_application`, `has_bureau_record`) plus a warn expectation, never `expect_or_fail`. `SK_ID_CURR` → `silver.application` has no orphans and is an integration test.
 - Expectation names are snake_case and stable — they are queried from the event log for DQ reporting.
+- DQ reporting: `dq_report_job` merges the counters of every pipeline update from `event_log(TABLE(<catalog>.silver.application))` into `monitoring.expectation_result` (key `update_id` × `dataset` × `expectation`). The TVF works from a serverless job. `dataset` is as reported: fully qualified, or a bare view name for the SCD2 change feeds. Run it after a pipeline update; the integration tests compare its latest update with the event log.
 - Dedup in Silver is deterministic: explicit key + ordering column; never `dropDuplicates()` without a subset.
 
 ## Ingestion
 
-- Kaggle CSVs land in the Volume `raw/landing/home_credit/<table>/`. Auto Loader with schema hints for keys and amounts (`common/schemas.py`). Inside a Lakeflow pipeline the schema location and checkpoint are managed by the pipeline — do not set `cloudFiles.schemaLocation` there; set it (in the same Volume) only for Auto Loader outside pipelines; COPY INTO is used only in the comparison demo job.
+- Kaggle CSVs land in the Volume `raw/landing/home_credit/<table>/`. Auto Loader with schema hints for keys and amounts (`common/schemas.py`). Inside a Lakeflow pipeline the schema location and checkpoint are managed by the pipeline — do not set `cloudFiles.schemaLocation` there; set it (in the same Volume) only for Auto Loader outside pipelines; COPY INTO is used only in the comparison demo job (`copy_into_demo_job` → `sandbox.bureau_copy_into`, which infers the keys as `int`, not `bigint`).
 - ECB: `https://data-api.ecb.europa.eu/service/data/{flow}/{key}?format=csvdata`. Old `sdw-wsrest` URLs are dead — never use them. Series keys are pinned in `config.py`. Fetch is local-first: `uv run python -m credit_risk.ingestion.ecb --catalog <catalog>` lands `raw/landing/ecb/<series>/<series>_<YYYYMMDD>.csv` (one dated file per fetch, never overwritten; Silver keeps the latest revision). An empty selection returns HTTP 200 with an empty body, so the response is validated; don't silently skip.
 - Streaming: the generator runs locally and replays `installments_payments` of the contracts with `SK_ID_PREV % PAYMENT_STREAM_SAMPLE_MODULUS = 0` as JSON Lines micro-files (`payments_<batch>.json`, source column names, offsets only) into `raw/landing/payment_stream/events/`; `--max-batches` lands only the first files. The consumer (`payment_stream_job`) uses Auto Loader + Structured Streaming with `trigger(availableNow=True)` only (the only trigger supported on serverless), checkpoint in `payment_stream/_checkpoint/`, schema location in `payment_stream/_schema/`, and appends to the job-owned `bronze.payment_events`.
 - `bronze.payment_events` is a replay of rows already in `bronze.installments_payments`: never feed it into Silver / Gold (double-counted payments). It is reconciled with the batch rows by `EXCEPT ALL` in the integration tests.
@@ -117,6 +123,8 @@ Raw Kaggle files and any data samples larger than fixtures are **never** committ
 
 - Dataset is ~GB scale: **do not partition** tables by default. Use liquid clustering (`CLUSTER BY`) on join/filter keys (`SK_ID_CURR`, `month`). Partitioning and Z-ORDER exist only as a measured experiment in `docs/perf_notes.md`.
 - Serverless has no classic Spark UI — analyse with Query Profile and `EXPLAIN FORMATTED`. Every performance claim in docs has before/after numbers (duration, files read, shuffle bytes).
+- Benchmarks read metrics from the Query History API by statement id. The warehouse result cache ignores comments and always-true predicates: make each run return a unique column and check `result_from_cache`. `network_sent_bytes` comes back as 0 on the Free Edition warehouse.
+- Tables are ~140 MB, i.e. 1–4 files at the default file size, so layout effects are only visible with `delta.targetFileSize` reduced; say so next to any such number.
 - Prefer broadcast hints only after checking the plan; don't sprinkle them.
 
 ## Testing
@@ -127,10 +135,10 @@ Raw Kaggle files and any data samples larger than fixtures are **never** committ
 
 ## CI/CD
 
-- GitHub Actions: on PR → ruff, unit tests, `bundle validate -t dev`; on merge to `main` → `bundle deploy -t prod`. Secrets: `DATABRICKS_HOST`, `DATABRICKS_TOKEN` in repo secrets only.
+- GitHub Actions: on PR (`pr.yml`) → ruff, unit tests, `bundle validate -t dev` and `-t prod`; on merge to `main` (`deploy.yml`) → `bundle validate` + `bundle deploy -t prod`. The deploy only updates pipeline / job definitions, it runs nothing. Secrets: `DATABRICKS_HOST`, `DATABRICKS_TOKEN` in repo secrets only.
 - Ownership split: **Terraform** owns catalogs, schemas, volumes, grants; **bundles** own pipelines and jobs. Never define the same resource in both.
-- Terraform: `cd infra/terraform && terraform plan -var-file=envs/dev.tfvars`. State is local and gitignored; `.terraform.lock.hcl` is committed. Local files are landed with `uv run python -m credit_risk.ingestion.kaggle_landing --source-dir <dir> --catalog <catalog>`.
-- Free Edition uses Default Storage: `databricks catalogs create` (REST) fails with "Metastore storage root URL does not exist"; `CREATE CATALOG` via SQL on the serverless warehouse works. `credit_risk_dev` was bootstrapped that way in phase 0 and must be `terraform import`ed, not recreated.
+- Terraform: `cd infra/terraform && terraform plan -var-file=envs/dev.tfvars`. State is local and gitignored; `.terraform.lock.hcl` is committed. One Terraform workspace per environment: `default` = dev, `prod` = prod (`terraform workspace select prod` + `-var-file=envs/prod.tfvars`); a precondition rejects the tfvars of the other environment. Always switch back to `default`. Grants: variable `catalog_grants` (principal → privileges), empty by default. Local files are landed with `uv run python -m credit_risk.ingestion.kaggle_landing --source-dir <dir> --catalog <catalog>`.
+- Free Edition uses Default Storage: `databricks catalogs create` (REST) fails with "Metastore storage root URL does not exist"; `CREATE CATALOG` via SQL on the serverless warehouse works. `credit_risk_dev` and `credit_risk_prod` were bootstrapped that way and are adopted by the `import` block, never recreated. `credit_risk_prod` has schemas and the landing volume but no data: landing files and the first pipeline run on prod are a separate, ask-first step.
 - Conventional Commits (`feat:`, `fix:`, `refactor:`, `test:`, `ci:`, `docs:`). One logical change per commit.
 
 ## Workspace permissions for Claude
