@@ -70,6 +70,17 @@ SILVER_ENTITIES: tuple[str, ...] = (
     "macro_observation",
 )
 
+# SCD2 history tables history.<entity>_scd2: Silver entity -> business key.
+HISTORY_ENTITIES: dict[str, str] = {
+    "application": "sk_id_curr",
+    "previous_application": "sk_id_prev",
+}
+# Ingestion metadata of a Bronze row. In the history tables it is carried along but not tracked:
+# a row delivered again with unchanged attributes does not open a new version.
+INGESTION_METADATA_COLUMNS: tuple[str, ...] = ("_rescued_data", "_ingested_at", "_source_file")
+# Column that orders the deliveries of one key; it becomes __START_AT / __END_AT.
+HISTORY_SEQUENCE_COLUMN = "_ingested_at"
+
 # The source has no calendar dates: DAYS_* and MONTHS_BALANCE are offsets from the application
 # date. They are mapped to the calendar through this single SYNTHETIC anchor (every application
 # is treated as filed on this day). Only transformations/calendar.py may use it.
