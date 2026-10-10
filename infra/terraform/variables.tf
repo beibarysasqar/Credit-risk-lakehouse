@@ -8,3 +8,9 @@ variable "databricks_profile" {
   type        = string
   default     = "DEFAULT"
 }
+
+variable "catalog_grants" {
+  description = "Catalog-level grants: principal (user, group or service principal) -> privileges."
+  type        = map(list(string))
+  default     = {}
+}

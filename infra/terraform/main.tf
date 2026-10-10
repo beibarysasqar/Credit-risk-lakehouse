@@ -7,6 +7,15 @@ locals {
     silver  = "Cleaned, typed and deduplicated tables"
     gold    = "Business-level marts (client_month)"
     history = "SCD2 history base and model-validation snapshots"
+    # Job-owned tables that are not part of the medallion flow.
+    monitoring = "Data-quality reporting: expectation results per pipeline update"
+    sandbox    = "Experiments: layout benchmark copies and the COPY INTO demo table"
+  }
+
+  # One state per environment: Terraform workspace -> catalog it may manage.
+  workspace_catalogs = {
+    default = "credit_risk_dev"
+    prod    = "credit_risk_prod"
   }
 }
 
@@ -23,6 +32,11 @@ resource "databricks_catalog" "this" {
   comment = "Credit risk lakehouse catalog"
 
   lifecycle {
+    # Applying the tfvars of one environment on the state of the other would replace its schemas.
+    precondition {
+      condition     = lookup(local.workspace_catalogs, terraform.workspace, null) == var.catalog
+      error_message = "Catalog ${var.catalog} does not belong to Terraform workspace ${terraform.workspace}."
+    }
     prevent_destroy = true
     # Assigned by Default Storage / the metastore, not managed here.
     ignore_changes = [
@@ -49,4 +63,13 @@ resource "databricks_volume" "landing" {
   name         = "landing"
   volume_type  = "MANAGED"
   comment      = "Source files: home_credit/<table>/, ecb/, streaming micro-files and checkpoints"
+}
+
+# Empty by default: on a single-user workspace the owner already has every privilege.
+resource "databricks_grant" "catalog" {
+  for_each = var.catalog_grants
+
+  catalog    = databricks_catalog.this.name
+  principal  = each.key
+  privileges = each.value
 }
