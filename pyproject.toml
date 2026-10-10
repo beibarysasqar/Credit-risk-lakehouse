@@ -11,6 +11,7 @@ dependencies = []
 validation_snapshot = "credit_risk.jobs.validation_snapshot:main"
 payment_stream = "credit_risk.jobs.payment_stream:main"
 dq_report = "credit_risk.jobs.dq_report:main"
+copy_into_demo = "credit_risk.jobs.copy_into_demo:main"
 
 [dependency-groups]
 dev = [

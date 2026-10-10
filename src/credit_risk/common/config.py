@@ -91,6 +91,11 @@ EXPECTATION_RESULT_KEY: tuple[str, ...] = ("update_id", "dataset", "expectation"
 # Any table of the pipeline identifies its event log; this one is the anchor.
 EVENT_LOG_ANCHOR_TABLE = "silver.application"
 
+# COPY INTO comparison demo: one Home Credit entity loaded a second time, outside the
+# medallion flow. Never feed it into Silver.
+COPY_INTO_DEMO_ENTITY = "bureau"
+COPY_INTO_DEMO_TABLE = f"sandbox.{COPY_INTO_DEMO_ENTITY}_copy_into"
+
 # Payment stream: a sample of installments_payments replayed as JSON micro-files.
 PAYMENT_STREAM_SOURCE = "payment_stream"
 PAYMENT_STREAM_ENTITY = "installments_payments"
