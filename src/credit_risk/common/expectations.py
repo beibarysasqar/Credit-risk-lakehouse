@@ -8,7 +8,7 @@ quarantined, never both and never neither.
 
 from dataclasses import dataclass
 
-from credit_risk.common.config import SILVER_ENTITIES
+from credit_risk.common.config import ECB_SERIES, MACRO_COLUMN_PREFIX, SILVER_ENTITIES
 
 
 @dataclass(frozen=True)
@@ -145,9 +145,11 @@ SILVER_RULES: dict[str, Rules] = {
 
 assert tuple(SILVER_RULES) == SILVER_ENTITIES
 
-# Tables derived from Silver: the aggregated installments and the Gold contract / client months.
+# Tables derived from Silver: the aggregated installments and the Gold contract / client / macro
+# months.
 # Nothing is dropped here (the inputs are already clean), so there are no quarantine tables.
 _DEFAULT_MATCHES = "(installment_dpd >= 90) = (source_dpd >= 90)"
+_MACRO_PRESENT = " AND ".join(f"{MACRO_COLUMN_PREFIX}{series} IS NOT NULL" for series in ECB_SERIES)
 _EXPOSURE_AMOUNT_NOT_NEGATIVE = {
     "exposure_amount_not_negative": "exposure_amount IS NULL OR exposure_amount >= 0"
 }
@@ -196,6 +198,16 @@ DERIVED_RULES: dict[str, Rules] = {
             ),
         },
         drop={},
-        warn=_EXPOSURE_AMOUNT_NOT_NEGATIVE,
+        warn={
+            **_EXPOSURE_AMOUNT_NOT_NEGATIVE,
+            # Months outside the fetched ECB range have no macro values.
+            "macro_columns_present": _MACRO_PRESENT,
+        },
+    ),
+    "macro_month": Rules(
+        fail={"month_not_null": "month IS NOT NULL"},
+        drop={},
+        # Early months, when the series with the longer lag is not published yet.
+        warn={"macro_values_present": _MACRO_PRESENT},
     ),
 }

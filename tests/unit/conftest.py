@@ -106,6 +106,6 @@ def derived(silver_table: Callable[[str], DataFrame]) -> Callable[[str], DataFra
         bureau_month = gold.bureau_client_month(
             silver_table("bureau_balance"), silver_table("bureau")
         )
-        return gold.build_client_month(build("contract_month"), bureau_month)
+        return gold.build_client_month(build("contract_month"), bureau_month, build("macro_month"))
 
     return build
