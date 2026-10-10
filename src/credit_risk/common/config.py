@@ -80,6 +80,10 @@ HISTORY_ENTITIES: dict[str, str] = {
 INGESTION_METADATA_COLUMNS: tuple[str, ...] = ("_rescued_data", "_ingested_at", "_source_file")
 # Column that orders the deliveries of one key; it becomes __START_AT / __END_AT.
 HISTORY_SEQUENCE_COLUMN = "_ingested_at"
+# Tables written by the validation snapshot job (ordinary Delta tables: time travel works on
+# them, unlike on the pipeline's materialized views and streaming tables).
+VALIDATION_DATASET_TABLE = "history.validation_dataset"
+VALIDATION_SNAPSHOT_TABLE = "history.validation_snapshot"
 
 # The source has no calendar dates: DAYS_* and MONTHS_BALANCE are offsets from the application
 # date. They are mapped to the calendar through this single SYNTHETIC anchor (every application

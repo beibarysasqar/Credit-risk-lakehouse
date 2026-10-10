@@ -4,6 +4,13 @@ bundle:
 include:
   - resources/*.yml
 
+# Wheel of src/credit_risk for the jobs (the pipeline imports the sources directly).
+artifacts:
+  default:
+    type: whl
+    build: uv build --wheel
+    path: .
+
 variables:
   catalog:
     description: Unity Catalog catalog that all pipelines and jobs read from and write to.

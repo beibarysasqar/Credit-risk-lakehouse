@@ -1,0 +1,28 @@
+resources:
+  jobs:
+    validation_snapshot_job:
+      name: validation_snapshot_job
+      parameters:
+        # First day of the month the snapshot describes.
+        - name: as_of_month
+          default: "2018-04-01"
+      tasks:
+        - task_key: validation_snapshot
+          environment_key: default
+          python_wheel_task:
+            package_name: credit_risk
+            entry_point: validation_snapshot
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --as-of-month
+              - "{{job.parameters.as_of_month}}"
+              - --snapshot-id
+              - "{{job.run_id}}"
+      environments:
+        - environment_key: default
+          spec:
+            # Python 3.12, as required by pyproject.toml (version 2 runs Python 3.11).
+            environment_version: "4"
+            dependencies:
+              - ../dist/*.whl

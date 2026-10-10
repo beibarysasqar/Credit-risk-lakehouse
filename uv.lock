@@ -88,27 +88,23 @@ wheels = [
 name = "credit-risk"
 version = "0.1.0"
 source = { editable = "." }
-dependencies = [
-    { name = "delta-spark" },
-    { name = "pyspark" },
-]
 
 [package.dev-dependencies]
 dev = [
     { name = "databricks-sdk" },
+    { name = "delta-spark" },
+    { name = "pyspark" },
     { name = "pytest" },
     { name = "ruff" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "delta-spark", specifier = "==4.0.*" },
-    { name = "pyspark", specifier = "==4.0.*" },
-]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "databricks-sdk", specifier = ">=0.60" },
+    { name = "delta-spark", specifier = "==4.0.*" },
+    { name = "pyspark", specifier = "==4.0.*" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.6" },
 ]
