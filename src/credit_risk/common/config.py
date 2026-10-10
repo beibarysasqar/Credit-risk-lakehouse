@@ -67,6 +67,7 @@ SILVER_ENTITIES: tuple[str, ...] = (
     "pos_cash_balance",
     "credit_card_balance",
     "installments_payments",
+    "macro_observation",
 )
 
 # The source has no calendar dates: DAYS_* and MONTHS_BALANCE are offsets from the application

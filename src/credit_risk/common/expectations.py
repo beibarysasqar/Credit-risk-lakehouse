@@ -1,4 +1,4 @@
-"""Data-quality rules of the Silver tables: expectation name -> SQL condition.
+"""Data-quality rules of the Silver and derived tables: expectation name -> SQL condition.
 
 Names are stable snake_case: they are queried from the pipeline event log for DQ reporting.
 ``fail`` stops the update, ``drop`` moves the row to ``silver.<entity>_quarantine``, ``warn``
@@ -130,6 +130,16 @@ SILVER_RULES: dict[str, Rules] = {
             "amt_instalment_positive": "amt_instalment > 0",
             "payment_recorded": "days_entry_payment IS NOT NULL AND amt_payment IS NOT NULL",
         },
+    ),
+    "macro_observation": Rules(
+        fail={"series_not_null": "series IS NOT NULL"},
+        drop={
+            **_NO_RESCUED_DATA,
+            "period_month_parsed": "period_month IS NOT NULL",
+            "obs_value_present": "obs_value IS NOT NULL",
+        },
+        # All pinned series are rates in percent.
+        warn={"obs_value_plausible": "obs_value BETWEEN -10 AND 30"},
     ),
 }
 

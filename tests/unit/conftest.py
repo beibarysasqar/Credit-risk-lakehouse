@@ -8,10 +8,12 @@ import pytest
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
+from credit_risk.common.config import ECB_PUBLICATION_LAGS, ECB_SERIES
 from credit_risk.common.expectations import SILVER_RULES
-from credit_risk.transformations import dpd, gold, silver
+from credit_risk.transformations import dpd, gold, macro, silver
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "home_credit"
+ECB_FIXTURES = Path(__file__).parents[1] / "fixtures" / "ecb"
 
 
 @pytest.fixture(scope="session")
@@ -32,7 +34,27 @@ def bronze(spark: SparkSession) -> Callable[[str], DataFrame]:
 
 
 @pytest.fixture(scope="session")
-def prepared(bronze: Callable[[str], DataFrame]) -> Callable[[str], DataFrame]:
+def bronze_ecb(spark: SparkSession) -> Callable[[str], DataFrame]:
+    """Load an ECB fixture CSV the way Bronze delivers it: hinted types plus metadata columns."""
+
+    def load(series: str) -> DataFrame:
+        source = spark.read.csv(str(ECB_FIXTURES / f"{series}.csv"), header=True)
+        return source.withColumns(
+            {
+                "OBS_VALUE": F.col("OBS_VALUE").cast("double"),
+                "_rescued_data": F.lit(None).cast("string"),
+                "_ingested_at": F.lit(datetime(2026, 1, 1)),
+                "_source_file": F.lit(f"/landing/ecb/{series}/{series}_20260101.csv"),
+            }
+        )
+
+    return load
+
+
+@pytest.fixture(scope="session")
+def prepared(
+    bronze: Callable[[str], DataFrame], bronze_ecb: Callable[[str], DataFrame]
+) -> Callable[[str], DataFrame]:
     """Build the cleaned (pre-expectation) DataFrame of a Silver entity from the fixtures."""
 
     def build(entity: str) -> DataFrame:
@@ -44,6 +66,8 @@ def prepared(bronze: Callable[[str], DataFrame]) -> Callable[[str], DataFrame]:
             return silver.clean_bureau_balance(bronze("bureau_balance"), build("bureau"))
         if entity == "previous_application":
             return silver.clean_previous_application(bronze("previous_application"))
+        if entity == "macro_observation":
+            return macro.clean_macro_observations({s: bronze_ecb(s) for s in ECB_SERIES})
         clean = getattr(silver, f"clean_{entity}")
         return clean(bronze(entity), build("previous_application"))
 
@@ -65,7 +89,7 @@ def silver_table(prepared: Callable[[str], DataFrame]) -> Callable[[str], DataFr
 
 @pytest.fixture(scope="session")
 def derived(silver_table: Callable[[str], DataFrame]) -> Callable[[str], DataFrame]:
-    """Build a table derived from Silver (installments, contract_month, client_month)."""
+    """Build a table derived from Silver (installments, contract / client / macro month)."""
 
     def build(entity: str) -> DataFrame:
         if entity == "installments":
@@ -77,6 +101,8 @@ def derived(silver_table: Callable[[str], DataFrame]) -> Callable[[str], DataFra
                 dpd.installment_dpd_by_month(build("installments")),
                 silver_table("previous_application"),
             )
+        if entity == "macro_month":
+            return macro.build_macro_month(silver_table("macro_observation"), ECB_PUBLICATION_LAGS)
         bureau_month = gold.bureau_client_month(
             silver_table("bureau_balance"), silver_table("bureau")
         )
