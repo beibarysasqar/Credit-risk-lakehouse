@@ -4,14 +4,18 @@ version = "0.1.0"
 description = "Medallion lakehouse on Home Credit Default Risk and ECB macro data"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
-dependencies = [
-    # Keep both on the Spark major/minor of the Databricks serverless environment.
-    "pyspark==4.0.*",
-    "delta-spark==4.0.*",
-]
+# Spark is provided by the Databricks serverless environment: the wheel must not pull it in.
+dependencies = []
+
+[project.scripts]
+validation_snapshot = "credit_risk.jobs.validation_snapshot:main"
 
 [dependency-groups]
 dev = [
+    # Local Spark for the unit tests. Keep both on the Spark major/minor of the Databricks
+    # serverless environment.
+    "pyspark==4.0.*",
+    "delta-spark==4.0.*",
     "pytest>=8",
     "ruff>=0.6",
     # Files API uploads and SQL checks in integration tests. Never databricks-connect.

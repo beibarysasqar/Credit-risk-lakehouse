@@ -10,9 +10,11 @@ BRONZE_SOURCES = {entity: [entity] for entity in SILVER_ENTITIES} | {
     "macro_observation": [f"ecb_{series}" for series in ECB_SERIES],
 }
 # Bronze rows that Silver must account for. ECB files are refetched with revised history, so
-# only the distinct periods of a series count there.
+# only the distinct periods of a series count there; a client delivered again (the demo
+# correction of application_train) counts once.
 BRONZE_ROWS = dict.fromkeys(SILVER_ENTITIES, "count(*)") | {
-    "macro_observation": "count(DISTINCT TIME_PERIOD)"
+    "application": "count(DISTINCT SK_ID_CURR)",
+    "macro_observation": "count(DISTINCT TIME_PERIOD)",
 }
 
 KEYS = {

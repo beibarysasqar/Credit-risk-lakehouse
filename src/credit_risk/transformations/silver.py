@@ -102,12 +102,13 @@ def _int_types(*columns: str) -> dict[str, str]:
     return dict.fromkeys(columns, "INT")
 
 
-def clean_application(train: DataFrame, test: DataFrame) -> DataFrame:
-    """Merge ``application_train`` and ``application_test`` into one cleaned table.
+def prepare_application(train: DataFrame, test: DataFrame) -> DataFrame:
+    """Merge ``application_train`` and ``application_test`` and clean them row by row.
 
-    Grain: one row per ``sk_id_curr`` (key). ``is_train`` tells the two sources apart;
-    ``target`` exists only for train rows and is null (never imputed) for test rows.
-    ``days_employed`` = 365243 becomes null with ``days_employed_anomaly`` set.
+    Grain: one row per delivered source row (no key yet: a client delivered again appears
+    again). ``is_train`` tells the two sources apart; ``target`` exists only for train rows and
+    is null (never imputed) for test rows. ``days_employed`` = 365243 becomes null with
+    ``days_employed_anomaly`` set. Stateless, so it also runs on a stream.
     """
     df = standardize_columns(
         train.withColumn("is_train", F.lit(True)).unionByName(
@@ -132,8 +133,16 @@ def clean_application(train: DataFrame, test: DataFrame) -> DataFrame:
         },
     )
     leading = ["sk_id_curr", "is_train", "target"]
-    df = df.select(*leading, *[name for name in df.columns if name not in leading])
-    return dedup_latest(df, ["sk_id_curr"])
+    return df.select(*leading, *[name for name in df.columns if name not in leading])
+
+
+def clean_application(train: DataFrame, test: DataFrame) -> DataFrame:
+    """Merge ``application_train`` and ``application_test`` into one cleaned table.
+
+    Grain: one row per ``sk_id_curr`` (key): the most recently ingested row of
+    ``prepare_application``.
+    """
+    return dedup_latest(prepare_application(train, test), ["sk_id_curr"])
 
 
 def clean_bureau(df: DataFrame) -> DataFrame:
@@ -194,10 +203,11 @@ def clean_bureau_balance(df: DataFrame, bureau: DataFrame) -> DataFrame:
     return flag_parent_exists(df, bureau, "sk_id_bureau", "has_bureau_record")
 
 
-def clean_previous_application(df: DataFrame) -> DataFrame:
-    """Clean the previous Home Credit applications.
+def prepare_previous_application(df: DataFrame) -> DataFrame:
+    """Clean the previous Home Credit applications row by row.
 
-    Grain: one row per ``sk_id_prev`` (key); ``sk_id_curr`` references the application.
+    Grain: one row per delivered source row (no key yet: a contract delivered again appears
+    again); ``sk_id_curr`` references the application. Stateless, so it also runs on a stream.
     The 365243 sentinel in the five ``days_*`` schedule columns and the -1 sentinel in
     ``sellerplace_area`` become null with a ``<column>_anomaly`` flag each.
     ``decision_date`` is the synthetic date of ``days_decision``.
@@ -232,8 +242,16 @@ def clean_previous_application(df: DataFrame) -> DataFrame:
             ),
         },
     )
-    df = df.withColumn("decision_date", to_calendar_date(F.col("days_decision")))
-    return dedup_latest(df, ["sk_id_prev"])
+    return df.withColumn("decision_date", to_calendar_date(F.col("days_decision")))
+
+
+def clean_previous_application(df: DataFrame) -> DataFrame:
+    """Clean the previous Home Credit applications.
+
+    Grain: one row per ``sk_id_prev`` (key): the most recently ingested row of
+    ``prepare_previous_application``.
+    """
+    return dedup_latest(prepare_previous_application(df), ["sk_id_prev"])
 
 
 def clean_pos_cash_balance(df: DataFrame, previous_application: DataFrame) -> DataFrame:

@@ -236,3 +236,75 @@ Rules are in `DERIVED_RULES` (`common/expectations.py`). `expect_or_fail`: keys 
 `amt_paid_not_above_instalment`, `macro_columns_present` (a client month without macro values),
 `macro_values_present` (the first two months of `gold.macro_month`, before the unemployment rate
 is published). Key uniqueness is an integration test.
+
+## History
+
+The durable history base. Logic in `src/credit_risk/transformations/history.py`, SCD2 tables in
+`src/credit_risk/pipelines/history.py`, snapshots in `src/credit_risk/jobs/validation_snapshot.py`.
+
+| Table | Written by | Grain / key | Clustered by |
+|---|---|---|---|
+| `history.application_scd2` | pipeline, AUTO CDC | one row per `sk_id_curr` × version | `sk_id_curr` |
+| `history.previous_application_scd2` | pipeline, AUTO CDC | one row per `sk_id_prev` × version | `sk_id_prev` |
+| `history.validation_dataset` | job `validation_snapshot_job` | one row per `snapshot_id` × `sk_id_curr` | `snapshot_id`, `sk_id_curr` |
+| `history.validation_snapshot` | job `validation_snapshot_job` | one row per `snapshot_id` × `table_name` | `snapshot_id` |
+
+### SCD2 tables
+
+Silver tables are materialized views and cannot be read as a stream, so the change feed of an SCD2
+table is the **Bronze stream**, cleaned with the same row-level functions as Silver
+(`prepare_application`, `prepare_previous_application`: Silver without the deduplication) and
+checked with the same `expect_or_fail` / `expect_or_drop` rules of `SILVER_RULES`.
+`dp.create_auto_cdc_flow(..., stored_as_scd_type=2)` keeps one version per key and change:
+
+- Columns are the Silver columns plus `__START_AT` (inclusive) and `__END_AT` (exclusive, null for
+  the current version). The open versions equal `silver.<entity>` (integration test).
+- Deliveries of a key are ordered by `_ingested_at`. **The validity interval is ingestion time** —
+  when the lakehouse learned the value — not the synthetic calendar of the Silver dates.
+- `_ingested_at`, `_source_file` and `_rescued_data` are carried along but not tracked: a row
+  delivered again with unchanged attributes does not open a new version.
+- Two rows of one key inside one delivery share `_ingested_at`; the source has no such duplicates.
+- A version starts at the `_ingested_at` of its Bronze row, slightly before the update that
+  writes it commits. A snapshot taken inside that gap would not see the version yet; snapshots are
+  taken after the update has completed.
+
+**Demo correction.** The Kaggle files are static, so every key would keep one version forever.
+`uv run python -m credit_risk.ingestion.demo_correction --source-dir <dir> --catalog <catalog>`
+lands `application_train_correction_<YYYYMMDD>.csv` next to the Kaggle file: the first five clients
+with `AMT_INCOME_TOTAL` × 1.1 and a flipped `NAME_FAMILY_STATUS` (made-up values, `TARGET`
+unchanged). After the next update these clients have two versions, and `silver.application` shows
+the corrected one. `bronze.application_train` holds the extra rows.
+
+### Validation snapshots
+
+`databricks bundle run validation_snapshot_job -t <target> --params as_of_month=2018-04-01` appends
+one snapshot; `snapshot_id` is the job run id.
+
+- `history.validation_dataset`: the `gold.client_month` row of `as_of_month` for every client, plus
+  the `history.application_scd2` attributes valid at `snapshot_ts` (the time of the run), `is_train`
+  and `target`. `target` is the label, not a feature, and is null for test clients. Months after
+  `as_of_month` and versions that started after `snapshot_ts` are never read (unit and integration
+  tests fail on look-ahead).
+- `history.validation_snapshot`: for the snapshot, the latest Delta version (`table_version`,
+  `table_version_ts`) of `history.validation_dataset` and of both SCD2 tables, and
+  `n_dataset_rows`.
+
+Reproduce a snapshot exactly as it was written:
+
+```sql
+SELECT * FROM history.validation_dataset VERSION AS OF <table_version>
+WHERE snapshot_id = '<snapshot_id>';
+```
+
+**Time travel is not the history store.** `VACUUM` removes old versions, so the durable history is
+the SCD2 tables and the appended snapshots. Measured on the dev workspace (serverless warehouse):
+
+| Relation | `DESCRIBE HISTORY` | `VERSION AS OF` |
+|---|---|---|
+| materialized view (`silver.*`, `gold.*`) | fails: `EXPECT_TABLE_NOT_VIEW` | fails: `UNSUPPORTED_FEATURE.TIME_TRAVEL` |
+| pipeline streaming table (`bronze.*`, `history.*_scd2`) | works | fails: "reconciliation query was not resolved" |
+| job-owned Delta table (`history.validation_*`) | works | works |
+
+That is why the snapshot data is copied into a job-owned table instead of recording a version of
+`gold.client_month`, and why the SCD2 versions in the manifest are an audit trail: the attributes
+of a past moment are read from the SCD2 intervals, not by time travel.

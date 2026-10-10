@@ -5,7 +5,11 @@ import pytest
 from credit_risk.common.config import (
     ECB_PUBLICATION_LAGS,
     ECB_SERIES,
+    HISTORY_ENTITIES,
+    HISTORY_SEQUENCE_COLUMN,
     HOME_CREDIT_TABLES,
+    INGESTION_METADATA_COLUMNS,
+    SILVER_ENTITIES,
     ecb_landing_dir,
     landing_dir,
 )
@@ -41,3 +45,9 @@ def test_ecb_landing_dir() -> None:
     )
     with pytest.raises(KeyError):
         ecb_landing_dir("some_catalog", "gdp")
+
+
+def test_history_entities_are_silver_entities_sequenced_by_ingestion_time() -> None:
+    assert HISTORY_ENTITIES == {"application": "sk_id_curr", "previous_application": "sk_id_prev"}
+    assert HISTORY_ENTITIES.keys() <= set(SILVER_ENTITIES)
+    assert HISTORY_SEQUENCE_COLUMN in INGESTION_METADATA_COLUMNS
