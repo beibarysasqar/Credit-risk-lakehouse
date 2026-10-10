@@ -237,6 +237,48 @@ Rules are in `DERIVED_RULES` (`common/expectations.py`). `expect_or_fail`: keys 
 `macro_values_present` (the first two months of `gold.macro_month`, before the unemployment rate
 is published). Key uniqueness is an integration test.
 
+## Payment stream
+
+A streaming demo next to the batch path. Generator in `src/credit_risk/streaming/generator.py`
+(runs locally), consumer in `src/credit_risk/streaming/consumer.py`, job entry point in
+`src/credit_risk/jobs/payment_stream.py` (`payment_stream_job`).
+
+| Table | Written by | Grain / key | Clustered by |
+|---|---|---|---|
+| `bronze.payment_events` | job `payment_stream_job` | one row per payment event (no key, like `bronze.installments_payments`) | – |
+
+- **The stream is a replay, not new data.** The Kaggle file is static, so the generator replays
+  the payments of a deterministic sample of contracts: `SK_ID_PREV % 5000 = 0`
+  (`PAYMENT_STREAM_SAMPLE_MODULUS`), 215 contracts and 2 578 events.
+- **Event** = one source row as a JSON object with the source column names and the Bronze types
+  (identifiers and `NUM_INSTALMENT_NUMBER` as integers, the rest as numbers, an empty value as
+  `null`). Events carry the source offsets only: no calendar date is derived in the generator, the
+  synthetic mapping stays in `transformations/calendar.py`.
+- **Replay order**: by `DAYS_ENTRY_PAYMENT` (an installment that was never paid is replayed on its
+  due day, `DAYS_INSTALMENT`), then by every column, so the order is total. The events are cut
+  into JSON Lines micro-files of 200 events, `payments_<batch>.json`. File names are deterministic
+  and a landed file is never overwritten, so the generator can be rerun; `--max-batches` lands
+  only the first files.
+- **Paths**, all in the landing volume under `payment_stream/`: `events/` (micro-files),
+  `_checkpoint/` (stream checkpoint), `_schema/` (Auto Loader schema location, needed because
+  this Auto Loader runs outside a pipeline).
+- **Consumer**: Auto Loader (JSON, the schema hints of `installments_payments`, rescue mode) →
+  ingestion metadata → append with `trigger(availableNow=True)`, the only trigger supported on
+  serverless. Every run ingests the files landed since the previous one. Measured on dev: 3 files
+  → 600 rows, then the other 10 files → 2 578 rows, the first three not read again.
+- **Not merged into Silver.** The events are the same payments that `bronze.installments_payments`
+  already holds; feeding them into `silver.installments` would count every payment twice. The
+  table is job-owned and outside the pipeline, and nothing in Silver or Gold reads it.
+
+Reconciliation with the batch path:
+
+- unit: the fixture payments, replayed through a local file stream and the same writer, give the
+  same `silver.installments` rows as the batch path (`test_stream_reproduces_the_batch_installments`),
+  and a rerun ingests only new files;
+- integration: `bronze.payment_events` and the Kaggle rows of the replayed contracts in
+  `bronze.installments_payments` are equal as multisets (`EXCEPT ALL` in both directions), which
+  also fails if a micro-file is ingested twice.
+
 ## History
 
 The durable history base. Logic in `src/credit_risk/transformations/history.py`, SCD2 tables in
@@ -303,7 +345,7 @@ the SCD2 tables and the appended snapshots. Measured on the dev workspace (serve
 |---|---|---|
 | materialized view (`silver.*`, `gold.*`) | fails: `EXPECT_TABLE_NOT_VIEW` | fails: `UNSUPPORTED_FEATURE.TIME_TRAVEL` |
 | pipeline streaming table (`bronze.*`, `history.*_scd2`) | works | fails: "reconciliation query was not resolved" |
-| job-owned Delta table (`history.validation_*`) | works | works |
+| job-owned Delta table (`history.validation_*`, `bronze.payment_events`) | works | works |
 
 That is why the snapshot data is copied into a job-owned table instead of recording a version of
 `gold.client_month`, and why the SCD2 versions in the manifest are an audit trail: the attributes
