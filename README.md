@@ -117,6 +117,9 @@ uv run pytest tests/integration -q                          # dev
 CREDIT_RISK_CATALOG=credit_risk_prod uv run pytest tests/integration -q
 ```
 
+The integration tests expect the optional jobs to have run on that catalog (the COPY INTO
+checks need `copy_into_demo_job`).
+
 ## Environments and CI/CD
 
 | | dev | prod |
