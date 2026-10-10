@@ -25,6 +25,7 @@ databricks bundle validate -t dev
 databricks bundle deploy -t dev
 databricks bundle run <job_or_pipeline_key> -t dev
 databricks bundle run <pipeline_key> -t dev --refresh <table>   # partial refresh
+databricks bundle run validation_snapshot_job -t dev --params as_of_month=2018-04-01
 uv run pytest tests/integration -q        # asserts against dev catalog via SQL
 ```
 
@@ -39,7 +40,8 @@ src/credit_risk/
   common/                   # config.py (catalog, anchor date, ECB series), schemas.py
   transformations/          # PURE functions: DataFrame in → DataFrame out (silver.py, dpd.py, gold.py, macro.py, calendar.py)
   pipelines/                # thin Lakeflow wrappers: bronze.py, silver.py, gold.py, history.py
-  ingestion/                # ecb.py, kaggle landing helpers
+  jobs/                     # thin job entry points (wheel scripts): validation_snapshot.py
+  ingestion/                # ecb.py, kaggle landing helpers, demo_correction.py
   streaming/                # payment-stream generator + consumer
 tests/unit/  tests/integration/  tests/fixtures/   # tiny hand-made CSV/JSON fixtures
 infra/terraform/
@@ -84,9 +86,14 @@ Raw Kaggle files and any data samples larger than fixtures are **never** committ
 
 ## History base (SCD2 + time travel)
 
-- SCD2 via Lakeflow AUTO CDC (`dp.create_auto_cdc_flow`, `stored_as_scd_type=2`) for client/contract attributes; columns `__START_AT`/`__END_AT` are the validity interval. Use MERGE in a job only if AUTO CDC cannot express the case.
+- SCD2 via Lakeflow AUTO CDC (`dp.create_auto_cdc_flow`, `stored_as_scd_type=2`) for client/contract attributes (`HISTORY_ENTITIES`: `application`, `previous_application`); columns `__START_AT`/`__END_AT` are the validity interval. Use MERGE in a job only if AUTO CDC cannot express the case.
+- Silver is materialized views and cannot be streamed: the SCD2 change feed is the Bronze stream through `silver.prepare_*` (row-level cleaning without dedup, so it runs on a stream) with the `SILVER_RULES` fail/drop rules. `sequence_by = _ingested_at`, so the validity interval is **ingestion time**, not the synthetic calendar. Ingestion metadata columns are not tracked.
 - Time travel is **not** the history store: VACUUM removes old versions. SCD2 tables are the durable history; time travel is for audit/rollback demos and reproducing a model-validation snapshot (`VERSION AS OF` recorded in the validation job output).
-- Model-validation snapshots: a job writes `history.validation_snapshot` with `snapshot_id`, source table versions and as-of month, so any snapshot is reproducible.
+- Time travel works only on job-owned Delta tables. On materialized views `DESCRIBE HISTORY` and `VERSION AS OF` fail; on pipeline streaming tables `DESCRIBE HISTORY` works but `VERSION AS OF` fails from the warehouse. Never plan a snapshot around a version of a Silver/Gold table.
+- Model-validation snapshots: `validation_snapshot_job` (wheel entry point, `snapshot_id` = job run id) appends the as-of-month slice of `gold.client_month` + SCD2 attributes valid at the run time to `history.validation_dataset`, and `snapshot_id`, table versions and as-of month to `history.validation_snapshot`, so any snapshot is reproducible.
+- Job serverless environments use `environment_version: "4"` (Python 3.12); version 2 runs Python 3.11 and rejects the wheel with `ERROR_UNSUPPORTED_PYTHON_VERSION`.
+- The wheel has no runtime dependencies: `pyspark`/`delta-spark` live in the `dev` group, because serverless provides Spark and must not get it reinstalled.
+- `ingestion/demo_correction.py` lands a small made-up correction of `application_train` (first five clients) so SCD2 has a second version. Integration tests therefore count Bronze rows of the Kaggle file only.
 
 ## Data quality (expectations)
 
