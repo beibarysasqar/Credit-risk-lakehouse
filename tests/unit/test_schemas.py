@@ -1,5 +1,5 @@
 from credit_risk.common.config import HOME_CREDIT_TABLES
-from credit_risk.common.schemas import SCHEMA_HINTS, schema_hints
+from credit_risk.common.schemas import SCHEMA_HINTS, ecb_schema_hints, schema_hints
 
 
 def test_every_entity_pins_its_keys_as_bigint() -> None:
@@ -16,4 +16,10 @@ def test_target_is_hinted_only_for_train() -> None:
 def test_schema_hints_rendering() -> None:
     assert schema_hints("bureau_balance") == (
         "SK_ID_BUREAU BIGINT, MONTHS_BALANCE INT, STATUS STRING"
+    )
+
+
+def test_ecb_time_period_is_pinned_as_string() -> None:
+    assert ecb_schema_hints() == (
+        "KEY STRING, TIME_PERIOD STRING, OBS_VALUE DOUBLE, OBS_STATUS STRING"
     )

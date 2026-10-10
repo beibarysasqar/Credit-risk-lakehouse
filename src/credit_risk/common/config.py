@@ -4,6 +4,7 @@ The catalog name is never hardcoded here: it flows from the bundle variable ``ca
 into pipeline/job parameters and is passed to these helpers explicitly.
 """
 
+from dataclasses import dataclass
 from datetime import date
 
 LANDING_SCHEMA = "raw"
@@ -22,7 +23,42 @@ HOME_CREDIT_TABLES: dict[str, str] = {
     "installments_payments": "installments_payments.csv",
 }
 
-# Silver entity names. application_train and application_test are merged into "application".
+
+@dataclass(frozen=True)
+class EcbSeries:
+    """One pinned ECB Data Portal series: dataflow, series key and publication lag."""
+
+    flow: str
+    key: str
+    # Months between the reference month and the month in which the value is known. A value
+    # of period P is used from month P + lag on (point-in-time), see docs/data_model.md.
+    publication_lag_months: int
+
+
+ECB_SOURCE = "ecb"
+# The old sdw-wsrest host is dead; this is the only supported endpoint.
+ECB_API_URL = "https://data-api.ecb.europa.eu/service/data"
+# Client months start in 2010-05 (offset -96 from the anchor); the margin covers the lags.
+ECB_START_PERIOD = "2009-01"
+# Euro-area monthly series. Home Credit's country is not disclosed: the macro join is illustrative.
+ECB_SERIES: dict[str, EcbSeries] = {
+    # HICP overall index, annual rate of change; the final figure comes mid next month.
+    "hicp_yoy": EcbSeries("ICP", "M.U2.N.000000.4.ANR", publication_lag_months=1),
+    # Unemployment rate, age 15-74, seasonally adjusted; released about a month after the period.
+    "unemployment_rate": EcbSeries(
+        "LFSI", "M.I9.S.UNEHRT.TOTAL0.15_74.T", publication_lag_months=2
+    ),
+    # Euribor 3-month, average of the month; complete on the last day of the month itself.
+    "euribor_3m": EcbSeries("FM", "M.U2.EUR.RT.MM.EURIBOR3MD_.HSTA", publication_lag_months=0),
+}
+ECB_PUBLICATION_LAGS: dict[str, int] = {
+    name: series.publication_lag_months for name, series in ECB_SERIES.items()
+}
+# Prefix of the macro columns in Gold: macro_<series>.
+MACRO_COLUMN_PREFIX = "macro_"
+
+# Silver entity names. application_train and application_test are merged into "application";
+# macro_observation holds the ECB series.
 SILVER_ENTITIES: tuple[str, ...] = (
     "application",
     "bureau",
@@ -79,3 +115,10 @@ def landing_dir(catalog: str, entity: str) -> str:
     if entity not in HOME_CREDIT_TABLES:
         raise KeyError(f"Unknown Home Credit entity: {entity!r}")
     return f"{landing_root(catalog)}/{HOME_CREDIT_SOURCE}/{entity}/"
+
+
+def ecb_landing_dir(catalog: str, series: str) -> str:
+    """Return the landing directory of an ECB series, one directory per series."""
+    if series not in ECB_SERIES:
+        raise KeyError(f"Unknown ECB series: {series!r}")
+    return f"{landing_root(catalog)}/{ECB_SOURCE}/{series}/"

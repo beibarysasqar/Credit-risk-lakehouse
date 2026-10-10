@@ -1,4 +1,4 @@
-"""Auto Loader schema hints for the Home Credit source files.
+"""Auto Loader schema hints for the Home Credit and ECB source files.
 
 Only keys, offsets that are part of a key or drive DPD logic, and money amounts are pinned;
 every other column is inferred. Amounts stay DOUBLE in Bronze to mirror the source files,
@@ -85,7 +85,25 @@ SCHEMA_HINTS: dict[str, dict[str, str]] = {
 
 assert SCHEMA_HINTS.keys() == HOME_CREDIT_TABLES.keys()
 
+# The columns every ECB csvdata response has; the dimension columns differ per dataflow.
+ECB_SCHEMA_HINTS: dict[str, str] = {
+    "KEY": "STRING",
+    # "2018-05" must never be inferred as a date or a number.
+    "TIME_PERIOD": "STRING",
+    "OBS_VALUE": "DOUBLE",
+    "OBS_STATUS": "STRING",
+}
+
+
+def _render(hints: dict[str, str]) -> str:
+    return ", ".join(f"{column} {dtype}" for column, dtype in hints.items())
+
 
 def schema_hints(entity: str) -> str:
     """Render the ``cloudFiles.schemaHints`` value of an entity, e.g. ``"A BIGINT, B DOUBLE"``."""
-    return ", ".join(f"{column} {dtype}" for column, dtype in SCHEMA_HINTS[entity].items())
+    return _render(SCHEMA_HINTS[entity])
+
+
+def ecb_schema_hints() -> str:
+    """Render the ``cloudFiles.schemaHints`` value shared by all ECB series."""
+    return _render(ECB_SCHEMA_HINTS)

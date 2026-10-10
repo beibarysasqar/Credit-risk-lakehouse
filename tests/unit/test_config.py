@@ -2,7 +2,13 @@ import re
 
 import pytest
 
-from credit_risk.common.config import HOME_CREDIT_TABLES, landing_dir
+from credit_risk.common.config import (
+    ECB_PUBLICATION_LAGS,
+    ECB_SERIES,
+    HOME_CREDIT_TABLES,
+    ecb_landing_dir,
+    landing_dir,
+)
 
 
 def test_home_credit_entities_are_snake_case() -> None:
@@ -20,3 +26,18 @@ def test_landing_dir_uses_the_given_catalog() -> None:
 def test_landing_dir_rejects_unknown_entity() -> None:
     with pytest.raises(KeyError):
         landing_dir("some_catalog", "POS_CASH_balance")
+
+
+def test_ecb_series_are_monthly_with_a_lag() -> None:
+    assert all(re.fullmatch(r"[a-z][a-z0-9_]*", series) for series in ECB_SERIES)
+    # The lag logic and the period parsing assume monthly series.
+    assert all(spec.key.startswith("M.") for spec in ECB_SERIES.values())
+    assert ECB_PUBLICATION_LAGS == {"hicp_yoy": 1, "unemployment_rate": 2, "euribor_3m": 0}
+
+
+def test_ecb_landing_dir() -> None:
+    assert ecb_landing_dir("some_catalog", "hicp_yoy") == (
+        "/Volumes/some_catalog/raw/landing/ecb/hicp_yoy/"
+    )
+    with pytest.raises(KeyError):
+        ecb_landing_dir("some_catalog", "gdp")
