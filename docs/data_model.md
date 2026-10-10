@@ -28,10 +28,30 @@ Rules:
 - Metadata columns: `_ingested_at` (load timestamp), `_source_file` (`_metadata.file_path`),
   `_rescued_data` (values that did not fit the schema; schema evolution mode is `rescue`).
 
+### ECB macro series
+
+Three euro-area monthly series from the ECB Data Portal
+(`https://data-api.ecb.europa.eu/service/data/{flow}/{key}?format=csvdata`), pinned in
+`ECB_SERIES` (`common/config.py`) and fetched from 2009-01 on:
+
+| Table | Flow / key | Content | Publication lag |
+|---|---|---|---|
+| `bronze.ecb_hicp_yoy` | `ICP` / `M.U2.N.000000.4.ANR` | HICP overall index, annual rate of change, % | 1 month |
+| `bronze.ecb_unemployment_rate` | `LFSI` / `M.I9.S.UNEHRT.TOTAL0.15_74.T` | unemployment rate, age 15–74, seasonally adjusted, % | 2 months |
+| `bronze.ecb_euribor_3m` | `FM` / `M.U2.EUR.RT.MM.EURIBOR3MD_.HSTA` | Euribor 3-month, average of the month, % | 0 months |
+
+`uv run python -m credit_risk.ingestion.ecb --catalog <catalog>` fetches the series locally (it
+does not depend on outbound access from serverless) and uploads them to
+`/Volumes/<catalog>/raw/landing/ecb/<series>/<series>_<YYYYMMDD>.csv`. Every fetch is a new dated
+file with the full history; nothing is overwritten. Auto Loader appends it to Bronze with the same
+rules as above; `KEY`, `TIME_PERIOD` (string, e.g. `2018-05`), `OBS_VALUE` and `OBS_STATUS` are
+pinned, the dimension columns differ per dataflow and are inferred.
+
 ## Silver
 
 Cleaned tables built as materialized views from Bronze in the same pipeline. Business logic lives
-in `src/credit_risk/transformations/silver.py`, the rules in `src/credit_risk/common/expectations.py`.
+in `src/credit_risk/transformations/silver.py` (`macro.py` for the ECB series), the rules in
+`src/credit_risk/common/expectations.py`.
 
 | Table | Built from | Grain / key | Clustered by |
 |---|---|---|---|
@@ -42,6 +62,7 @@ in `src/credit_risk/transformations/silver.py`, the rules in `src/credit_risk/co
 | `silver.pos_cash_balance` | `bronze.pos_cash_balance` | one row per `sk_id_prev` × `months_balance` | `sk_id_curr`, `month` |
 | `silver.credit_card_balance` | `bronze.credit_card_balance` | one row per `sk_id_prev` × `months_balance` | `sk_id_curr`, `month` |
 | `silver.installments_payments` | `bronze.installments_payments` | one row per payment (several per installment) | `sk_id_curr`, `sk_id_prev` |
+| `silver.macro_observation` | `bronze.ecb_*` | one row per `series` × `period_month` | `series`, `period_month` |
 
 Each table has a companion `silver.<entity>_quarantine` (see Data quality below).
 
@@ -92,6 +113,15 @@ in `transformations/calendar.py` (`to_calendar_date`, `to_calendar_month`). The 
 | `bureau_balance`, `pos_cash_balance`, `credit_card_balance` | `month` (first day of month) | `months_balance` |
 | `installments_payments` | `instalment_date`, `entry_payment_date` | `days_instalment`, `days_entry_payment` |
 
+### Macro observations
+
+`silver.macro_observation` is the long form of the ECB series: `series` (the name pinned in
+`ECB_SERIES`), `period_month` (first day of the reference month, a **real** calendar month, unlike
+the synthetic Home Credit dates), `obs_value` (`DOUBLE`), `obs_status`, `time_period` and
+`series_key` as delivered. When a series is fetched again, the most recently ingested observation
+of a period wins, so ECB revisions replace the older value. Periods that are not `YYYY-MM` or have
+no value go to the quarantine (`period_month_parsed`, `obs_value_present`).
+
 ### Data quality
 
 | Action | Meaning | Rules |
@@ -102,6 +132,7 @@ in `transformations/calendar.py` (`to_calendar_date`, `to_calendar_month`). The 
 
 `silver.<entity>` and `silver.<entity>_quarantine` are complementary: together they hold exactly the
 deduplicated Bronze rows. With the current source files every quarantine table is empty.
+`macro_observation` follows the same pattern (fail `series_not_null`, warn `obs_value_plausible`).
 
 **Orphan contracts.** The Kaggle files are a sample, so child rows exist whose parent contract was not
 delivered. They are kept, flagged and reported as warnings (`bureau_record_exists`,
@@ -139,10 +170,11 @@ default definition is described in [default_definition.md](default_definition.md
 | Table | Built from | Grain / key | Clustered by |
 |---|---|---|---|
 | `gold.contract_month` | `silver.pos_cash_balance` ∪ `silver.credit_card_balance`, `silver.installments`, `silver.previous_application` | one row per `sk_id_prev` × `month` | `sk_id_curr`, `month` |
-| `gold.client_month` | `gold.contract_month`, `silver.bureau_balance`, `silver.bureau` | one row per `sk_id_curr` × `month` | `sk_id_curr`, `month` |
+| `gold.macro_month` | `silver.macro_observation` | one row per `month` | — |
+| `gold.client_month` | `gold.contract_month`, `silver.bureau_balance`, `silver.bureau`, `gold.macro_month` | one row per `sk_id_curr` × `month` | `sk_id_curr`, `month` |
 
-`month` is the first day of the synthetic calendar month. Neither table carries `TARGET` or
-application attributes. Macro columns are not there yet (ECB phase).
+`month` is the first day of the synthetic calendar month. No table carries `TARGET` or
+application attributes.
 
 ### `gold.contract_month`
 
@@ -172,6 +204,28 @@ A row exists for every month in which the client has a contract row or a credit 
 | `exposure_amount` | sum over active contracts |
 | `n_active_contracts`, `n_contracts` | active / all contract rows of the month |
 | `bureau_max_dpd_bucket`, `bureau_default_flag`, `n_bureau_active_contracts` | credit bureau statuses, kept apart from `max_dpd` |
+| `macro_hicp_yoy`, `macro_unemployment_rate`, `macro_euribor_3m` | `gold.macro_month` of the same `month`; null for a month it does not cover |
+
+### `gold.macro_month`
+
+Logic in `src/credit_risk/transformations/macro.py`. One row per month from the first to the last
+month in which any observation is available; column `macro_<series>` per pinned series.
+
+**Point-in-time.** An observation of reference month P becomes visible in month
+P + publication lag (table in the Bronze section, `publication_lag_months` in `ECB_SERIES`).
+Month M carries the latest observation visible in M: `macro_hicp_yoy` of May is the April figure,
+`macro_unemployment_rate` of May is the March figure, `macro_euribor_3m` of May is the May average.
+A gap in a series is filled with the last visible value. A unit test and an integration test fail
+if a month sees a value published later.
+
+**Limitations — the macro join is illustrative.**
+
+- Home Credit's country is not disclosed; the series describe the euro area, not the market the
+  loans were granted in.
+- `month` in `gold.client_month` is synthetic (every application is anchored on 2018-05-01), so a
+  client month meets the macro values of a calendar month the loan may never have lived in.
+- The lags are whole-month approximations of the release calendar, and the values are the ECB's
+  current revision, not the vintage that was published at the time.
 
 ### Data quality
 
@@ -179,4 +233,6 @@ Rules are in `DERIVED_RULES` (`common/expectations.py`). `expect_or_fail`: keys 
 `default_flag_matches_max_dpd`, `default_start_month_matches_flag`. Warnings:
 `installment_dpd_default_matches_source` (reconciliation of computed and source DPD),
 `exposure_amount_not_negative`, `previous_application_exists`, `instalment_paid_in_full`,
-`amt_paid_not_above_instalment`. Key uniqueness is an integration test.
+`amt_paid_not_above_instalment`, `macro_columns_present` (a client month without macro values),
+`macro_values_present` (the first two months of `gold.macro_month`, before the unemployment rate
+is published). Key uniqueness is an integration test.
