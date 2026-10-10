@@ -1,0 +1,20 @@
+resources:
+  jobs:
+    payment_stream_job:
+      name: payment_stream_job
+      tasks:
+        - task_key: payment_stream
+          environment_key: default
+          python_wheel_task:
+            package_name: credit_risk
+            entry_point: payment_stream
+            parameters:
+              - --catalog
+              - ${var.catalog}
+      environments:
+        - environment_key: default
+          spec:
+            # Python 3.12, as required by pyproject.toml (version 2 runs Python 3.11).
+            environment_version: "4"
+            dependencies:
+              - ../dist/*.whl

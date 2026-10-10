@@ -26,6 +26,8 @@ databricks bundle deploy -t dev
 databricks bundle run <job_or_pipeline_key> -t dev
 databricks bundle run <pipeline_key> -t dev --refresh <table>   # partial refresh
 databricks bundle run validation_snapshot_job -t dev --params as_of_month=2018-04-01
+uv run python -m credit_risk.streaming.generator --source-dir <dir> --catalog <catalog>   # land payment micro-files
+databricks bundle run payment_stream_job -t dev   # ingest the micro-files landed since the last run
 uv run pytest tests/integration -q        # asserts against dev catalog via SQL
 ```
 
@@ -40,9 +42,9 @@ src/credit_risk/
   common/                   # config.py (catalog, anchor date, ECB series), schemas.py
   transformations/          # PURE functions: DataFrame in → DataFrame out (silver.py, dpd.py, gold.py, macro.py, calendar.py)
   pipelines/                # thin Lakeflow wrappers: bronze.py, silver.py, gold.py, history.py
-  jobs/                     # thin job entry points (wheel scripts): validation_snapshot.py
+  jobs/                     # thin job entry points (wheel scripts): validation_snapshot.py, payment_stream.py
   ingestion/                # ecb.py, kaggle landing helpers, demo_correction.py
-  streaming/                # payment-stream generator + consumer
+  streaming/                # payment-stream generator.py (local) + consumer.py
 tests/unit/  tests/integration/  tests/fixtures/   # tiny hand-made CSV/JSON fixtures
 infra/terraform/
 docs/                       # default_definition.md, data_model.md, perf_notes.md
@@ -108,7 +110,8 @@ Raw Kaggle files and any data samples larger than fixtures are **never** committ
 
 - Kaggle CSVs land in the Volume `raw/landing/home_credit/<table>/`. Auto Loader with schema hints for keys and amounts (`common/schemas.py`). Inside a Lakeflow pipeline the schema location and checkpoint are managed by the pipeline — do not set `cloudFiles.schemaLocation` there; set it (in the same Volume) only for Auto Loader outside pipelines; COPY INTO is used only in the comparison demo job.
 - ECB: `https://data-api.ecb.europa.eu/service/data/{flow}/{key}?format=csvdata`. Old `sdw-wsrest` URLs are dead — never use them. Series keys are pinned in `config.py`. Fetch is local-first: `uv run python -m credit_risk.ingestion.ecb --catalog <catalog>` lands `raw/landing/ecb/<series>/<series>_<YYYYMMDD>.csv` (one dated file per fetch, never overwritten; Silver keeps the latest revision). An empty selection returns HTTP 200 with an empty body, so the response is validated; don't silently skip.
-- Streaming: generator replays `installments_payments` as JSON micro-files into a Volume; consumer uses Structured Streaming with `trigger(availableNow=True)` only (the only trigger supported on serverless) and a checkpoint in the Volume.
+- Streaming: the generator runs locally and replays `installments_payments` of the contracts with `SK_ID_PREV % PAYMENT_STREAM_SAMPLE_MODULUS = 0` as JSON Lines micro-files (`payments_<batch>.json`, source column names, offsets only) into `raw/landing/payment_stream/events/`; `--max-batches` lands only the first files. The consumer (`payment_stream_job`) uses Auto Loader + Structured Streaming with `trigger(availableNow=True)` only (the only trigger supported on serverless), checkpoint in `payment_stream/_checkpoint/`, schema location in `payment_stream/_schema/`, and appends to the job-owned `bronze.payment_events`.
+- `bronze.payment_events` is a replay of rows already in `bronze.installments_payments`: never feed it into Silver / Gold (double-counted payments). It is reconciled with the batch rows by `EXCEPT ALL` in the integration tests.
 
 ## Performance
 

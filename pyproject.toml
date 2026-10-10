@@ -9,6 +9,7 @@ dependencies = []
 
 [project.scripts]
 validation_snapshot = "credit_risk.jobs.validation_snapshot:main"
+payment_stream = "credit_risk.jobs.payment_stream:main"
 
 [dependency-groups]
 dev = [

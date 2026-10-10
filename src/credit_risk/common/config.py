@@ -85,6 +85,14 @@ HISTORY_SEQUENCE_COLUMN = "_ingested_at"
 VALIDATION_DATASET_TABLE = "history.validation_dataset"
 VALIDATION_SNAPSHOT_TABLE = "history.validation_snapshot"
 
+# Payment stream: a sample of installments_payments replayed as JSON micro-files.
+PAYMENT_STREAM_SOURCE = "payment_stream"
+PAYMENT_STREAM_ENTITY = "installments_payments"
+# Table appended by the stream consumer job (an ordinary Delta table, outside the pipeline).
+PAYMENT_EVENTS_TABLE = "bronze.payment_events"
+# Contracts with SK_ID_PREV divisible by this number are replayed (215 contracts).
+PAYMENT_STREAM_SAMPLE_MODULUS = 5000
+
 # The source has no calendar dates: DAYS_* and MONTHS_BALANCE are offsets from the application
 # date. They are mapped to the calendar through this single SYNTHETIC anchor (every application
 # is treated as filed on this day). Only transformations/calendar.py may use it.
@@ -138,3 +146,18 @@ def ecb_landing_dir(catalog: str, series: str) -> str:
     if series not in ECB_SERIES:
         raise KeyError(f"Unknown ECB series: {series!r}")
     return f"{landing_root(catalog)}/{ECB_SOURCE}/{series}/"
+
+
+def payment_stream_events_dir(catalog: str) -> str:
+    """Return the landing directory of the payment stream micro-files."""
+    return f"{landing_root(catalog)}/{PAYMENT_STREAM_SOURCE}/events/"
+
+
+def payment_stream_checkpoint_dir(catalog: str) -> str:
+    """Return the checkpoint directory of the payment stream consumer."""
+    return f"{landing_root(catalog)}/{PAYMENT_STREAM_SOURCE}/_checkpoint/"
+
+
+def payment_stream_schema_dir(catalog: str) -> str:
+    """Return the Auto Loader schema location of the payment stream consumer."""
+    return f"{landing_root(catalog)}/{PAYMENT_STREAM_SOURCE}/_schema/"
