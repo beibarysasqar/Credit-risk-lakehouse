@@ -23,10 +23,12 @@ def test_row_counts_cover_every_entity() -> None:
 
 @pytest.mark.parametrize("entity", list(HOME_CREDIT_TABLES))
 def test_bronze_table_matches_source(entity: str, sql, catalog: str) -> None:
+    # Only the rows of the Kaggle file are counted: later deliveries into the same directory
+    # (the demo correction of application_train) add rows on top.
     [[rows, rescued, missing_metadata, foreign_files]] = sql(
         f"""
         SELECT
-          count(*),
+          count_if(endswith(_source_file, '/{HOME_CREDIT_TABLES[entity]}')),
           count(_rescued_data),
           count_if(_ingested_at IS NULL OR _source_file IS NULL),
           count_if(NOT contains(_source_file, '{landing_dir(catalog, entity)}'))
