@@ -1,13 +1,13 @@
-"""Silver layer: cleaned Home Credit tables with expectations and quarantine tables."""
+"""Silver layer: cleaned Home Credit and ECB tables with expectations and quarantine tables."""
 
 from collections.abc import Callable
 
 from pyspark import pipelines as dp
 from pyspark.sql import DataFrame, SparkSession
 
-from credit_risk.common.config import SILVER_ENTITIES
+from credit_risk.common.config import ECB_SERIES, SILVER_ENTITIES
 from credit_risk.common.expectations import DERIVED_RULES, SILVER_RULES
-from credit_risk.transformations import silver
+from credit_risk.transformations import macro, silver
 from credit_risk.transformations.dpd import aggregate_installments
 from credit_risk.transformations.quality import quarantine_rows
 
@@ -55,6 +55,12 @@ SILVER_TABLES: dict[str, tuple[Callable[[], DataFrame], list[str]]] = {
         ),
         ["sk_id_curr", "sk_id_prev"],
     ),
+    "macro_observation": (
+        lambda: macro.clean_macro_observations(
+            {series: _bronze(f"ecb_{series}") for series in ECB_SERIES}
+        ),
+        ["series", "period_month"],
+    ),
 }
 
 assert tuple(SILVER_TABLES) == SILVER_ENTITIES
@@ -72,7 +78,7 @@ def _define_silver_table(
 
     @dp.materialized_view(
         name=f"silver.{entity}",
-        comment=f"Cleaned Home Credit {entity}: typed, snake_case, sentinel-free, deduplicated.",
+        comment=f"Cleaned {entity}: typed, snake_case, sentinel-free, deduplicated.",
         cluster_by=cluster_by,
     )
     @dp.expect_all_or_fail(rules.fail)

@@ -136,7 +136,9 @@ def bureau_client_month(bureau_balance: DataFrame, bureau: DataFrame) -> DataFra
     )
 
 
-def build_client_month(contract_month: DataFrame, bureau_month: DataFrame) -> DataFrame:
+def build_client_month(
+    contract_month: DataFrame, bureau_month: DataFrame, macro_month: DataFrame
+) -> DataFrame:
     """Build the client-month table with the 90+ DPD default flag.
 
     Grain: one row per ``sk_id_curr`` x ``month`` (key), for every month in which the client
@@ -146,7 +148,9 @@ def build_client_month(contract_month: DataFrame, bureau_month: DataFrame) -> Da
     current uninterrupted default episode (null outside default); a month without default or
     without any row ends the episode. It only looks backwards, like every other column: month M
     uses data up to M. ``exposure_amount`` sums the active contracts. Bureau columns come from
-    ``bureau_client_month`` and do not feed ``default_flag``.
+    ``bureau_client_month`` and do not feed ``default_flag``. The ``macro_*`` columns of
+    ``macro_month`` (one row per ``month``, see ``transformations/macro.py``) are attached by
+    month and are null for months it does not cover.
     """
     is_active = F.col("is_active")
     contracts = contract_month.groupBy("sk_id_curr", "month").agg(
@@ -174,7 +178,7 @@ def build_client_month(contract_month: DataFrame, bureau_month: DataFrame) -> Da
     current_episode_start = F.last("_episode_start", ignorenulls=True).over(
         history.rowsBetween(Window.unboundedPreceding, Window.currentRow)
     )
-    return df.select(
+    client_month = df.select(
         "sk_id_curr",
         "month",
         "max_dpd",
@@ -188,4 +192,8 @@ def build_client_month(contract_month: DataFrame, bureau_month: DataFrame) -> Da
         "bureau_max_dpd_bucket",
         F.coalesce("bureau_default_flag", F.lit(False)).alias("bureau_default_flag"),
         F.coalesce("n_bureau_active_contracts", F.lit(0)).alias("n_bureau_active_contracts"),
+    )
+    macro_columns = [name for name in macro_month.columns if name != "month"]
+    return client_month.join(macro_month, on="month", how="left").select(
+        *client_month.columns, *macro_columns
     )

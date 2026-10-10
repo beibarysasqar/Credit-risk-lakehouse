@@ -6,6 +6,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.testing import assertDataFrameEqual
 
+from credit_risk.common.config import ECB_SERIES
 from credit_risk.common.expectations import DERIVED_RULES
 from credit_risk.transformations.gold import (
     build_client_month,
@@ -14,12 +15,15 @@ from credit_risk.transformations.gold import (
 
 Table = Callable[[str], DataFrame]
 
+MACRO_COLUMNS = [f"macro_{series}" for series in ECB_SERIES]
+
 JAN, FEB, MAR, APR, MAY = (date(2018, month, 1) for month in range(1, 6))
 
 CONTRACT_MONTH_SCHEMA = (
     "sk_id_prev BIGINT, sk_id_curr BIGINT, month DATE, dpd INT, source_dpd_def INT, "
     "is_active BOOLEAN, exposure_amount DECIMAL(18,3)"
 )
+MACRO_MONTH_SCHEMA = "month DATE, macro_hicp_yoy DOUBLE"
 BUREAU_MONTH_SCHEMA = (
     "sk_id_curr BIGINT, month DATE, bureau_max_dpd_bucket INT, "
     "n_bureau_active_contracts INT, bureau_default_flag BOOLEAN"
@@ -33,6 +37,10 @@ def contract_months(spark: SparkSession, rows: list[tuple]) -> DataFrame:
 
 def no_bureau(spark: SparkSession) -> DataFrame:
     return spark.createDataFrame([], BUREAU_MONTH_SCHEMA)
+
+
+def no_macro(spark: SparkSession) -> DataFrame:
+    return spark.createDataFrame([], MACRO_MONTH_SCHEMA)
 
 
 def test_build_contract_month(spark: SparkSession, derived: Table) -> None:
@@ -126,14 +134,19 @@ def test_build_client_month(spark: SparkSession, derived: Table) -> None:
         "n_active_contracts INT, n_contracts INT, bureau_max_dpd_bucket INT, "
         "bureau_default_flag BOOLEAN, n_bureau_active_contracts INT",
     )
-    assert result.columns == expected.columns
-    assertDataFrameEqual(result, expected)
+    assert result.columns == [*expected.columns, *MACRO_COLUMNS]
+    assertDataFrameEqual(result.select(*expected.columns), expected)
+    # Every fixture month is covered by the ECB fixtures.
+    assert (
+        result.filter(F.expr(DERIVED_RULES["client_month"].warn["macro_columns_present"])).count()
+        == 7
+    )
 
 
 def test_max_dpd_is_taken_over_contracts_at_the_89_90_boundary(spark: SparkSession) -> None:
     rows = [(1, 10, JAN, 89), (2, 10, JAN, 30), (3, 20, JAN, 89), (4, 20, JAN, 90)]
 
-    result = build_client_month(contract_months(spark, rows), no_bureau(spark))
+    result = build_client_month(contract_months(spark, rows), no_bureau(spark), no_macro(spark))
 
     expected = spark.createDataFrame(
         [(10, 89, "60-89", False, 2), (20, 90, "90+", True, 2)],
@@ -158,7 +171,7 @@ def test_default_episodes(spark: SparkSession) -> None:
         (1, 10, aug, 252),
     ]
 
-    result = build_client_month(contract_months(spark, rows), no_bureau(spark))
+    result = build_client_month(contract_months(spark, rows), no_bureau(spark), no_macro(spark))
 
     expected = spark.createDataFrame(
         [
@@ -182,10 +195,27 @@ def test_client_month_has_no_look_ahead(spark: SparkSession) -> None:
     futures = ([], [(1, 10, MAR, 0)], [(1, 10, MAR, 154), (2, 10, APR, 400)])
 
     def history(future: list[tuple]) -> DataFrame:
-        result = build_client_month(contract_months(spark, past + future), no_bureau(spark))
+        result = build_client_month(
+            contract_months(spark, past + future), no_bureau(spark), no_macro(spark)
+        )
         return result.filter(F.col("month") <= FEB)
 
     baseline = history(futures[0])
     assert baseline.count() == 2
     for future in futures[1:]:
         assertDataFrameEqual(history(future), baseline)
+
+
+def test_macro_join_keeps_the_grain_and_uncovered_months(spark: SparkSession) -> None:
+    rows = [(1, 10, JAN, 0), (2, 10, JAN, 30), (1, 10, FEB, 0), (3, 20, FEB, 95)]
+    macro_month = spark.createDataFrame([(FEB, 1.1), (MAR, 1.4)], MACRO_MONTH_SCHEMA)
+
+    result = build_client_month(contract_months(spark, rows), no_bureau(spark), macro_month)
+
+    expected = spark.createDataFrame(
+        # January is not covered by the macro table: the row stays, the value is null.
+        [(10, JAN, 30, None), (10, FEB, 0, 1.1), (20, FEB, 95, 1.1)],
+        "sk_id_curr BIGINT, month DATE, max_dpd INT, macro_hicp_yoy DOUBLE",
+    )
+    assert result.columns[-1] == "macro_hicp_yoy"
+    assertDataFrameEqual(result.select(*expected.columns), expected)

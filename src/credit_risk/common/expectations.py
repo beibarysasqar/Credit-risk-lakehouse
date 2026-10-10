@@ -1,4 +1,4 @@
-"""Data-quality rules of the Silver tables: expectation name -> SQL condition.
+"""Data-quality rules of the Silver and derived tables: expectation name -> SQL condition.
 
 Names are stable snake_case: they are queried from the pipeline event log for DQ reporting.
 ``fail`` stops the update, ``drop`` moves the row to ``silver.<entity>_quarantine``, ``warn``
@@ -8,7 +8,7 @@ quarantined, never both and never neither.
 
 from dataclasses import dataclass
 
-from credit_risk.common.config import SILVER_ENTITIES
+from credit_risk.common.config import ECB_SERIES, MACRO_COLUMN_PREFIX, SILVER_ENTITIES
 
 
 @dataclass(frozen=True)
@@ -131,13 +131,25 @@ SILVER_RULES: dict[str, Rules] = {
             "payment_recorded": "days_entry_payment IS NOT NULL AND amt_payment IS NOT NULL",
         },
     ),
+    "macro_observation": Rules(
+        fail={"series_not_null": "series IS NOT NULL"},
+        drop={
+            **_NO_RESCUED_DATA,
+            "period_month_parsed": "period_month IS NOT NULL",
+            "obs_value_present": "obs_value IS NOT NULL",
+        },
+        # All pinned series are rates in percent.
+        warn={"obs_value_plausible": "obs_value BETWEEN -10 AND 30"},
+    ),
 }
 
 assert tuple(SILVER_RULES) == SILVER_ENTITIES
 
-# Tables derived from Silver: the aggregated installments and the Gold contract / client months.
+# Tables derived from Silver: the aggregated installments and the Gold contract / client / macro
+# months.
 # Nothing is dropped here (the inputs are already clean), so there are no quarantine tables.
 _DEFAULT_MATCHES = "(installment_dpd >= 90) = (source_dpd >= 90)"
+_MACRO_PRESENT = " AND ".join(f"{MACRO_COLUMN_PREFIX}{series} IS NOT NULL" for series in ECB_SERIES)
 _EXPOSURE_AMOUNT_NOT_NEGATIVE = {
     "exposure_amount_not_negative": "exposure_amount IS NULL OR exposure_amount >= 0"
 }
@@ -186,6 +198,16 @@ DERIVED_RULES: dict[str, Rules] = {
             ),
         },
         drop={},
-        warn=_EXPOSURE_AMOUNT_NOT_NEGATIVE,
+        warn={
+            **_EXPOSURE_AMOUNT_NOT_NEGATIVE,
+            # Months outside the fetched ECB range have no macro values.
+            "macro_columns_present": _MACRO_PRESENT,
+        },
+    ),
+    "macro_month": Rules(
+        fail={"month_not_null": "month IS NOT NULL"},
+        drop={},
+        # Early months, when the series with the longer lag is not published yet.
+        warn={"macro_values_present": _MACRO_PRESENT},
     ),
 }

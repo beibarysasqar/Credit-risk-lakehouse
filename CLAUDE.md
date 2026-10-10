@@ -37,7 +37,7 @@ databricks.yml              # bundle root, targets dev / prod
 resources/                  # *.yml: pipelines, jobs (one resource per file)
 src/credit_risk/
   common/                   # config.py (catalog, anchor date, ECB series), schemas.py
-  transformations/          # PURE functions: DataFrame in → DataFrame out (silver.py, dpd.py, gold.py, calendar.py)
+  transformations/          # PURE functions: DataFrame in → DataFrame out (silver.py, dpd.py, gold.py, macro.py, calendar.py)
   pipelines/                # thin Lakeflow wrappers: bronze.py, silver.py, gold.py, history.py
   ingestion/                # ecb.py, kaggle landing helpers
   streaming/                # payment-stream generator + consumer
@@ -69,12 +69,13 @@ Raw Kaggle files and any data samples larger than fixtures are **never** committ
 - `bureau_balance.STATUS`: `0` = no DPD, `1..5` = DPD buckets (5 = 120+ or written off), `C` = closed, `X` = unknown. Map to ordinal bucket + `is_closed` + `is_unknown`, not to fake day counts.
 - `POS_CASH_balance` / `credit_card_balance` already carry `SK_DPD` and `SK_DPD_DEF`; use the source values and reconcile against computed installment DPD in a data-quality check (warn expectation `installment_dpd_default_matches_source` on `gold.contract_month`), don't overwrite. `SK_DPD` drives the default flag; `SK_DPD_DEF` is a materiality filter and is only published alongside.
 - Macro data (ECB) is joined by calendar month via the anchor mapping. Home Credit's country is not disclosed, so the macro join is illustrative — say so in `docs/data_model.md`.
+- Macro is point-in-time: `gold.macro_month` shifts every series by its `publication_lag_months` (`ECB_SERIES`: HICP 1, unemployment 2, Euribor 0), and `gold.client_month` takes `macro_<series>` from it by `month`. All pinned series are monthly; a quarterly series needs its own period parsing first.
 
 ## Gold: `gold.client_month`
 
 - Grain: one row per `SK_ID_CURR` × `month`. Uniqueness of this key is an integration test.
 - Built from `gold.contract_month` (one row per `SK_ID_PREV` × `month`: source DPD, computed installment DPD, activity, exposure).
-- Columns at minimum: `max_dpd`, `dpd_bucket`, `default_flag`, `default_start_month`, `exposure_amount`, `n_active_contracts`, macro columns (macro columns come with the ECB phase).
+- Columns at minimum: `max_dpd`, `dpd_bucket`, `default_flag`, `default_start_month`, `exposure_amount`, `n_active_contracts`, macro columns (`macro_hicp_yoy`, `macro_unemployment_rate`, `macro_euribor_3m`).
 - `default_flag` uses Home Credit contracts only. Bureau statuses are ordinal buckets and stay in separate columns (`bureau_max_dpd_bucket`, `bureau_default_flag` = bucket ≥ 4, `n_bureau_active_contracts`); never merge them into `max_dpd`.
 - `default_start_month` = first month of the current uninterrupted default episode; a non-default or missing month ends the episode.
 - `exposure_amount` = cards `amt_balance` + POS/cash estimate `cnt_instalment_future × amt_annuity`, active contracts only; bureau debt is not included.
@@ -99,7 +100,7 @@ Raw Kaggle files and any data samples larger than fixtures are **never** committ
 ## Ingestion
 
 - Kaggle CSVs land in the Volume `raw/landing/home_credit/<table>/`. Auto Loader with schema hints for keys and amounts (`common/schemas.py`). Inside a Lakeflow pipeline the schema location and checkpoint are managed by the pipeline — do not set `cloudFiles.schemaLocation` there; set it (in the same Volume) only for Auto Loader outside pipelines; COPY INTO is used only in the comparison demo job.
-- ECB: `https://data-api.ecb.europa.eu/service/data/{flow}/{key}?format=csvdata`. Old `sdw-wsrest` URLs are dead — never use them. Series keys are pinned in `config.py`. If outbound access from serverless is blocked, fetch locally via `ingestion/ecb.py` and upload to the Volume; don't silently skip.
+- ECB: `https://data-api.ecb.europa.eu/service/data/{flow}/{key}?format=csvdata`. Old `sdw-wsrest` URLs are dead — never use them. Series keys are pinned in `config.py`. Fetch is local-first: `uv run python -m credit_risk.ingestion.ecb --catalog <catalog>` lands `raw/landing/ecb/<series>/<series>_<YYYYMMDD>.csv` (one dated file per fetch, never overwritten; Silver keeps the latest revision). An empty selection returns HTTP 200 with an empty body, so the response is validated; don't silently skip.
 - Streaming: generator replays `installments_payments` as JSON micro-files into a Volume; consumer uses Structured Streaming with `trigger(availableNow=True)` only (the only trigger supported on serverless) and a checkpoint in the Volume.
 
 ## Performance

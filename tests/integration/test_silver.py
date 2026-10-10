@@ -1,12 +1,18 @@
 import pytest
 
-from credit_risk.common.config import SILVER_ENTITIES
+from credit_risk.common.config import ECB_SERIES, SILVER_ENTITIES
 from credit_risk.common.expectations import SILVER_RULES
 
 pytestmark = pytest.mark.integration
 
 BRONZE_SOURCES = {entity: [entity] for entity in SILVER_ENTITIES} | {
-    "application": ["application_train", "application_test"]
+    "application": ["application_train", "application_test"],
+    "macro_observation": [f"ecb_{series}" for series in ECB_SERIES],
+}
+# Bronze rows that Silver must account for. ECB files are refetched with revised history, so
+# only the distinct periods of a series count there.
+BRONZE_ROWS = dict.fromkeys(SILVER_ENTITIES, "count(*)") | {
+    "macro_observation": "count(DISTINCT TIME_PERIOD)"
 }
 
 KEYS = {
@@ -21,6 +27,7 @@ KEYS = {
         "sk_id_prev, sk_id_curr, num_instalment_version, num_instalment_number, "
         "days_instalment, days_entry_payment, amt_instalment, amt_payment"
     ),
+    "macro_observation": "series, period_month",
 }
 
 # Rows whose parent contract is missing from the Kaggle sample (profiled on the source files).
@@ -49,7 +56,9 @@ TOKEN_COLUMNS = {
 
 @pytest.mark.parametrize("entity", SILVER_ENTITIES)
 def test_silver_and_quarantine_cover_bronze(entity: str, sql) -> None:
-    bronze = " + ".join(f"(SELECT count(*) FROM bronze.{e})" for e in BRONZE_SOURCES[entity])
+    bronze = " + ".join(
+        f"(SELECT {BRONZE_ROWS[entity]} FROM bronze.{e})" for e in BRONZE_SOURCES[entity]
+    )
     [[bronze_rows, silver_rows, quarantined, rescued]] = sql(
         f"""
         SELECT
