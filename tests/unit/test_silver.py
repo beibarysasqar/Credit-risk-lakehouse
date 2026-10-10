@@ -7,9 +7,11 @@ from pyspark.testing import assertDataFrameEqual
 
 from credit_risk.common.config import ANCHOR_DATE
 from credit_risk.common.expectations import SILVER_RULES
+from credit_risk.transformations import silver
 from credit_risk.transformations.quality import quarantine_rows
 
 Prepared = Callable[[str], DataFrame]
+Bronze = Callable[[str], DataFrame]
 
 
 def day(offset: int) -> date:
@@ -163,3 +165,28 @@ def test_clean_installments_payments(spark: SparkSession, prepared: Prepared) ->
 
     quarantined = quarantine_rows(result, SILVER_RULES["installments_payments"].drop)
     assert [row._failed_rules for row in quarantined.collect()] == [["instalment_identified"]]
+
+
+def test_prepare_application_keeps_every_delivered_row(bronze: Bronze, prepared: Prepared) -> None:
+    train, test = bronze("application_train"), bronze("application_test")
+
+    result = silver.prepare_application(train, test)
+
+    # The fixture delivers client 100002 twice: only the dedup of clean_application removes it.
+    assert result.count() == train.count() + test.count()
+    assert result.filter("sk_id_curr = 100002").count() == 2
+    assertDataFrameEqual(silver.dedup_latest(result, ["sk_id_curr"]), prepared("application"))
+
+
+def test_prepare_previous_application_keeps_every_delivered_row(
+    bronze: Bronze, prepared: Prepared
+) -> None:
+    source = bronze("previous_application")
+    delivered_twice = source.unionByName(source)
+
+    result = silver.prepare_previous_application(delivered_twice)
+
+    assert result.count() == 2 * source.count()
+    assertDataFrameEqual(
+        silver.dedup_latest(result, ["sk_id_prev"]), prepared("previous_application")
+    )
