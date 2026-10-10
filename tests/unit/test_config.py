@@ -9,9 +9,13 @@ from credit_risk.common.config import (
     HISTORY_SEQUENCE_COLUMN,
     HOME_CREDIT_TABLES,
     INGESTION_METADATA_COLUMNS,
+    PAYMENT_STREAM_ENTITY,
     SILVER_ENTITIES,
     ecb_landing_dir,
     landing_dir,
+    payment_stream_checkpoint_dir,
+    payment_stream_events_dir,
+    payment_stream_schema_dir,
 )
 
 
@@ -51,3 +55,17 @@ def test_history_entities_are_silver_entities_sequenced_by_ingestion_time() -> N
     assert HISTORY_ENTITIES == {"application": "sk_id_curr", "previous_application": "sk_id_prev"}
     assert HISTORY_ENTITIES.keys() <= set(SILVER_ENTITIES)
     assert HISTORY_SEQUENCE_COLUMN in INGESTION_METADATA_COLUMNS
+
+
+def test_payment_stream_dirs_do_not_overlap() -> None:
+    events = payment_stream_events_dir("some_catalog")
+    assert events == "/Volumes/some_catalog/raw/landing/payment_stream/events/"
+    assert PAYMENT_STREAM_ENTITY in HOME_CREDIT_TABLES
+    # The consumer lists the events directory: its own state must never be read as events.
+    for state_dir in (
+        payment_stream_checkpoint_dir("some_catalog"),
+        payment_stream_schema_dir("some_catalog"),
+    ):
+        assert state_dir.startswith("/Volumes/some_catalog/raw/landing/payment_stream/_")
+        assert not state_dir.startswith(events)
+    assert payment_stream_checkpoint_dir("c") != payment_stream_schema_dir("c")
