@@ -1,0 +1,36 @@
+name: Deploy to prod
+
+on:
+  push:
+    branches: [main]
+
+# Deploys run one after another; a running deploy is never cancelled half-way.
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The bundle builds the wheel with `uv build`.
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - uses: databricks/setup-cli@main
+
+      - name: Bundle validate
+        run: databricks bundle validate -t prod
+
+      # Deploys the pipeline and job definitions only; nothing is run.
+      - name: Bundle deploy
+        run: databricks bundle deploy -t prod

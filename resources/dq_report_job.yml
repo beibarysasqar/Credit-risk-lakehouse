@@ -1,0 +1,20 @@
+resources:
+  jobs:
+    dq_report_job:
+      name: dq_report_job
+      tasks:
+        - task_key: dq_report
+          environment_key: default
+          python_wheel_task:
+            package_name: credit_risk
+            entry_point: dq_report
+            parameters:
+              - --catalog
+              - ${var.catalog}
+      environments:
+        - environment_key: default
+          spec:
+            # Python 3.12, as required by pyproject.toml (version 2 runs Python 3.11).
+            environment_version: "4"
+            dependencies:
+              - ../dist/*.whl

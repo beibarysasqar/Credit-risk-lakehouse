@@ -1,0 +1,20 @@
+resources:
+  jobs:
+    copy_into_demo_job:
+      name: copy_into_demo_job
+      tasks:
+        - task_key: copy_into_demo
+          environment_key: default
+          python_wheel_task:
+            package_name: credit_risk
+            entry_point: copy_into_demo
+            parameters:
+              - --catalog
+              - ${var.catalog}
+      environments:
+        - environment_key: default
+          spec:
+            # Python 3.12, as required by pyproject.toml (version 2 runs Python 3.11).
+            environment_version: "4"
+            dependencies:
+              - ../dist/*.whl

@@ -279,6 +279,45 @@ Reconciliation with the batch path:
   `bronze.installments_payments` are equal as multisets (`EXCEPT ALL` in both directions), which
   also fails if a micro-file is ingested twice.
 
+## Monitoring
+
+Data-quality reporting. Logic in `expectation_results` (`src/credit_risk/transformations/quality.py`),
+job entry point in `src/credit_risk/jobs/dq_report.py` (`dq_report_job`).
+
+| Table | Written by | Grain / key | Clustered by |
+|---|---|---|---|
+| `monitoring.expectation_result` | job `dq_report_job` | one row per `update_id` × `dataset` × `expectation` | `update_id` |
+
+- Source: the pipeline event log, `event_log(TABLE(<catalog>.silver.application))`. The
+  `flow_progress` events of an update carry `passed_records` / `failed_records` per expectation;
+  a flow can report more than once, so the counters are summed.
+- Columns: the key, `update_ts` (first event of the update), `passed_records`, `failed_records`,
+  `pass_rate` (null when nothing was evaluated).
+- `dataset` is kept as the event log reports it: a fully qualified table name, or the bare name
+  of a pipeline-private view (the SCD2 change feeds, e.g. `history_application_changes`).
+- The job merges on the key, so it can be run after every update or once for several; a rerun
+  without new updates changes nothing. An update that evaluated no expectations has no rows.
+- The table is job-owned Delta, so it outlives the event log and supports time travel.
+
+Latest update, violations only:
+
+```sql
+SELECT dataset, expectation, failed_records, pass_rate
+FROM monitoring.expectation_result
+WHERE update_ts = (SELECT max(update_ts) FROM monitoring.expectation_result) AND failed_records > 0;
+```
+
+## Sandbox
+
+Experiments, outside the medallion flow. Nothing in Silver, Gold or History reads this schema.
+
+| Table | Written by | Purpose |
+|---|---|---|
+| `sandbox.contract_month_<layout>` | `credit_risk.perf.benchmark` (local) | copies of `gold.contract_month` for the layout benchmark |
+| `sandbox.bureau_copy_into` | job `copy_into_demo_job` | `bureau.csv` loaded with COPY INTO, for the comparison with Auto Loader |
+
+Both are described, with the measured numbers, in `docs/perf_notes.md`.
+
 ## History
 
 The durable history base. Logic in `src/credit_risk/transformations/history.py`, SCD2 tables in

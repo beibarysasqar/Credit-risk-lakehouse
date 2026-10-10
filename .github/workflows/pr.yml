@@ -40,8 +40,15 @@ jobs:
 
       - uses: databricks/setup-cli@main
 
-      - name: Bundle validate
+      - name: Bundle validate (dev)
         run: databricks bundle validate -t dev
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+
+      # The target deployed on merge to main: catch its errors before the merge.
+      - name: Bundle validate (prod)
+        run: databricks bundle validate -t prod
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
