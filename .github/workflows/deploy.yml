@@ -19,10 +19,11 @@ jobs:
       DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
       DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The bundle builds the wheel with `uv build`.
-      - uses: astral-sh/setup-uv@v6
+      # setup-uv has no floating major tags since v8: the full version is pinned.
+      - uses: astral-sh/setup-uv@v10.3.0
         with:
           enable-cache: true
 
