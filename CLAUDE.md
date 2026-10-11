@@ -5,6 +5,8 @@ Goal: a bank-grade medallion lakehouse on Home Credit Default Risk + ECB macro d
 
 Communicate with me in Russian; code, comments, commit messages and docs in English.
 
+**Status: feature-complete.** Everything described here is implemented, merged to `main` and running on both `dev` and `prod` (phases 0–7 plus the README). New work is maintenance or a newly agreed scope, not a missing piece of this file.
+
 ---
 
 ## Environment
@@ -32,6 +34,7 @@ databricks bundle run dq_report_job -t dev        # merge expectation results of
 databricks bundle run copy_into_demo_job -t dev   # COPY INTO comparison demo (sandbox)
 uv run python -m credit_risk.perf.benchmark --catalog <catalog> [--step build|run|all]   # layout benchmark
 uv run pytest tests/integration -q        # asserts against dev catalog via SQL
+CREDIT_RISK_CATALOG=credit_risk_prod uv run pytest tests/integration -q --ignore=tests/integration/test_copy_into.py   # read-only checks on prod
 ```
 
 Definition of done for any change: ruff clean → unit tests pass → `bundle validate` passes → deployed and run on `dev` if pipeline/job code changed.
@@ -50,8 +53,10 @@ src/credit_risk/
   streaming/                # payment-stream generator.py (local) + consumer.py
   perf/                     # benchmark.py: local layout benchmark through the SQL warehouse
 tests/unit/  tests/integration/  tests/fixtures/   # tiny hand-made CSV/JSON fixtures
-infra/terraform/
+infra/terraform/            # main.tf, envs/dev.tfvars, envs/prod.tfvars
+.github/workflows/          # pr.yml (checks), deploy.yml (prod deploy on merge to main)
 docs/                       # default_definition.md, data_model.md, perf_notes.md
+README.md                   # project overview; keep it in sync with docs/ when behaviour changes
 ```
 
 Raw Kaggle files and any data samples larger than fixtures are **never** committed (`data/`, `*.csv` outside `tests/fixtures` are gitignored).
@@ -130,7 +135,8 @@ Raw Kaggle files and any data samples larger than fixtures are **never** committ
 ## Testing
 
 - Unit: session-scoped local Spark fixture with Delta configured, `spark.sql.shuffle.partitions=2`, UI disabled. Compare DataFrames with `pyspark.testing.assertDataFrameEqual`. Fixtures are tiny and hand-crafted to hit edge cases (partial payments, sentinels, `X`/`C` statuses, month boundaries at DPD 89/90).
-- Integration: run against `credit_risk_dev` after `bundle run`; check row counts vs source, key uniqueness, expectation pass rates from the event log, default rate in train ≈ 8.07%.
+- Integration: run against `credit_risk_dev` after `bundle run` (`CREDIT_RISK_CATALOG` selects another catalog); check row counts vs source, key uniqueness, expectation pass rates from the event log, default rate in train ≈ 8.07%.
+- The integration tests assume the jobs have run on the catalog: `dq_report_job` after the latest pipeline update, `validation_snapshot_job`, the payment stream (generator + `payment_stream_job`), the demo correction, and `copy_into_demo_job` (dev only; skip `test_copy_into.py` on prod).
 - Bug fix = failing test first, then the fix.
 
 ## CI/CD
@@ -138,7 +144,9 @@ Raw Kaggle files and any data samples larger than fixtures are **never** committ
 - GitHub Actions: on PR (`pr.yml`) → ruff, unit tests, `bundle validate -t dev` and `-t prod`; on merge to `main` (`deploy.yml`) → `bundle validate` + `bundle deploy -t prod`. The deploy only updates pipeline / job definitions, it runs nothing. Secrets: `DATABRICKS_HOST`, `DATABRICKS_TOKEN` in repo secrets only.
 - Ownership split: **Terraform** owns catalogs, schemas, volumes, grants; **bundles** own pipelines and jobs. Never define the same resource in both.
 - Terraform: `cd infra/terraform && terraform plan -var-file=envs/dev.tfvars`. State is local and gitignored; `.terraform.lock.hcl` is committed. One Terraform workspace per environment: `default` = dev, `prod` = prod (`terraform workspace select prod` + `-var-file=envs/prod.tfvars`); a precondition rejects the tfvars of the other environment. Always switch back to `default`. Grants: variable `catalog_grants` (principal → privileges), empty by default. Local files are landed with `uv run python -m credit_risk.ingestion.kaggle_landing --source-dir <dir> --catalog <catalog>`.
-- Free Edition uses Default Storage: `databricks catalogs create` (REST) fails with "Metastore storage root URL does not exist"; `CREATE CATALOG` via SQL on the serverless warehouse works. `credit_risk_dev` and `credit_risk_prod` were bootstrapped that way and are adopted by the `import` block, never recreated. `credit_risk_prod` has schemas and the landing volume but no data: landing files and the first pipeline run on prod are a separate, ask-first step.
+- Free Edition uses Default Storage: `databricks catalogs create` (REST) fails with "Metastore storage root URL does not exist"; `CREATE CATALOG` via SQL on the serverless warehouse works. `credit_risk_dev` and `credit_risk_prod` were bootstrapped that way and are adopted by the `import` block, never recreated. Free Edition accepts `mode: production` and two pipelines (dev and prod) in one workspace.
+- State of `credit_risk_prod` (loaded 2026-10-11): Kaggle and ECB files landed, pipeline run, plus the demo correction, the payment stream, one validation snapshot (`as_of_month=2018-04-01`) and the DQ report. Row counts and the default rate match dev. `copy_into_demo_job` and the layout benchmark were not run on prod. Nothing is scheduled: after new files land, the pipeline and jobs are run by hand.
+- State of `credit_risk_dev.sandbox`: only `bureau_copy_into` (needed by the integration tests). The four benchmark copies were dropped; `benchmark --step build` recreates them.
 - Conventional Commits (`feat:`, `fix:`, `refactor:`, `test:`, `ci:`, `docs:`). One logical change per commit.
 
 ## Workspace permissions for Claude
@@ -148,6 +156,8 @@ Claude may validate, deploy and run anything in the **dev** target without askin
 - `--full-refresh` of a pipeline or rerunning full ingestion (Free Edition compute quota is limited);
 - `DROP`, `TRUNCATE`, `DELETE`, `VACUUM`, `RESTORE`, deleting Volume files or checkpoints;
 - changing grants or Terraform state (`terraform apply`).
+
+Dropping several tables in one go is blocked by Claude Code's auto-mode safeguard even after approval: hand me the `DROP` statements to run in the SQL editor instead of retrying.
 
 After every run report: run URL, status, duration, and failed expectations if any.
 
